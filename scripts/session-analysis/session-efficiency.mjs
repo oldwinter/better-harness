@@ -281,7 +281,8 @@ function responseRichness(event) {
 function mergeResponseEvents(left, right) {
   const primary = responseRichness(right) > responseRichness(left) ? right : left;
   const secondary = primary === left ? right : left;
-  const hasUsage = left?.modelUsage || right?.modelUsage;
+  const observedFields = TOKEN_FIELDS.filter((field) =>
+    observedTokenValue(left, field) !== null || observedTokenValue(right, field) !== null);
   return {
     ...secondary,
     ...primary,
@@ -291,10 +292,10 @@ function mergeResponseEvents(left, right) {
     requestIndex: primary.requestIndex ?? secondary.requestIndex,
     stopReason: primary.stopReason ?? secondary.stopReason,
     usageFieldsObserved: left.usageFieldsObserved === true || right.usageFieldsObserved === true,
-    ...(hasUsage ? {
-      modelUsage: Object.fromEntries(TOKEN_FIELDS.map((field) => [
+    ...(observedFields.length > 0 ? {
+      modelUsage: Object.fromEntries(observedFields.map((field) => [
         field,
-        Math.max(Number(left?.modelUsage?.[field] ?? 0), Number(right?.modelUsage?.[field] ?? 0)),
+        Math.max(observedTokenValue(left, field) ?? 0, observedTokenValue(right, field) ?? 0),
       ])),
     } : {}),
     evidenceRefs: boundedEvidenceRefs([
@@ -321,11 +322,25 @@ function aggregateModels(responses) {
 
 function tokenTotalsOrNull(responses) {
   if (!responses.some(hasNonZeroUsage)) return null;
-  return Object.fromEntries(TOKEN_FIELDS.map((field) => [field, responses.reduce((sum, event) => sum + Number(event?.modelUsage?.[field] ?? 0), 0)]));
+  const observedFields = TOKEN_FIELDS.filter((field) =>
+    responses.some((event) => observedTokenValue(event, field) !== null));
+  return Object.fromEntries(observedFields.map((field) => [
+    field,
+    responses.reduce((sum, event) => sum + (observedTokenValue(event, field) ?? 0), 0),
+  ]));
 }
 
 function hasNonZeroUsage(event) {
-  return TOKEN_FIELDS.some((field) => Number(event?.modelUsage?.[field] ?? 0) > 0);
+  return TOKEN_FIELDS.some((field) => (observedTokenValue(event, field) ?? 0) > 0);
+}
+
+function observedTokenValue(event, field) {
+  const usage = event?.modelUsage;
+  if (!usage || typeof usage !== "object" || !Object.hasOwn(usage, field)) return null;
+  const value = usage[field];
+  if (value === null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function usageStatus(responses, observed, nonZero) {

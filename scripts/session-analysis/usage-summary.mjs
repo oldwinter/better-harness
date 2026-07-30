@@ -22,6 +22,13 @@ Options:
   -h, --help                Print help
 `;
 
+const TOKEN_FIELDS = Object.freeze([
+  "inputTokens",
+  "outputTokens",
+  "cacheReadInputTokens",
+  "cacheCreationInputTokens",
+]);
+
 function count(value) {
   const number = Number(value ?? 0);
   return Number.isFinite(number) && number >= 0 ? number : 0;
@@ -33,12 +40,12 @@ function optionalText(value) {
 
 function tokenTotals(value) {
   if (!value || typeof value !== "object") return null;
-  return {
-    inputTokens: count(value.inputTokens),
-    outputTokens: count(value.outputTokens),
-    cacheReadInputTokens: count(value.cacheReadInputTokens),
-    cacheCreationInputTokens: count(value.cacheCreationInputTokens),
-  };
+  const observed = TOKEN_FIELDS.flatMap((field) => {
+    if (!Object.hasOwn(value, field) || value[field] === null || value[field] === "") return [];
+    const number = Number(value[field]);
+    return Number.isFinite(number) && number >= 0 ? [[field, number]] : [];
+  });
+  return observed.length > 0 ? Object.fromEntries(observed) : null;
 }
 
 export function buildUsageSummary(result = {}) {

@@ -684,6 +684,22 @@ test("Copilot provider keeps transcript-less workspace sessions explicit", async
   const warnings = await analyzer.analysisWarnings(scope, roots, sessions);
   assert.ok(warnings.some((warning) => warning.code === "copilot-session-transcript-partial"));
   assert.ok(warnings.some((warning) => warning.code === "copilot-per-response-usage-partial"));
+
+  // Public facts inject a bounded `until`, so the transcript-less session has
+  // unknown time rather than known relevance. It must still remain in a
+  // canonical counter instead of disappearing between workspace and window
+  // totals.
+  const facts = await analyzer.analyze({ command: "facts", workspace, home, selection: "all-eligible" });
+  const transcript = facts.sourceCoverage.transcript;
+  assert.equal(transcript.workspaceSessions, 2);
+  assert.equal(transcript.inWindowSessions, 1);
+  assert.equal(transcript.outOfWindowSessions, 0);
+  assert.equal(transcript.timeUnobservedSessions, 1);
+  assert.equal(
+    transcript.inWindowSessions + transcript.outOfWindowSessions + transcript.timeUnobservedSessions,
+    transcript.workspaceSessions,
+  );
+  assert.ok(facts.warningCodes.includes("copilot-session-transcript-partial"));
 });
 
 test("Copilot provider ignores sessions from another workspace", async () => {

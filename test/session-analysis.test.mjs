@@ -1668,6 +1668,28 @@ test("session usage efficiency treats zero-filled usage as unavailable effort pr
   assert.ok(result.opportunities.some((row) => row.kind === "usage-coverage-gap"));
 });
 
+test("session usage efficiency preserves only observed partial token fields", () => {
+  const result = buildSessionEfficiencySignal(
+    [{ sessionId: "session-partial", firstSeen: "2026-06-18T10:00:00.000Z", lastSeen: "2026-06-18T10:01:00.000Z" }],
+    [{
+      sessionId: "session-partial",
+      type: "model.response.completed",
+      timestamp: "2026-06-18T10:01:00.000Z",
+      requestId: "request-partial",
+      model: "copilot-model",
+      usageFieldsObserved: true,
+      modelUsage: { outputTokens: 128 },
+    }],
+  );
+
+  assert.equal(result.accountingMode, "host-estimated");
+  assert.equal(result.coverage.responseCount, 1);
+  assert.equal(result.coverage.usageFieldObservedCount, 1);
+  assert.deepEqual(result.tokenTotals, { outputTokens: 128 });
+  assert.deepEqual(result.modelUsage[0].tokenTotals, { outputTokens: 128 });
+  assert.equal(result.actualCost, null);
+});
+
 test("assistant fragments never inflate canonical model request counts", () => {
   const sessions = [{ sessionId: "session-a", firstSeen: "2026-06-18T10:00:00.000Z", lastSeen: "2026-06-18T10:01:00.000Z" }];
   const assistant = {

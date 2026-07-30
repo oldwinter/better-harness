@@ -67,9 +67,55 @@ test("usage summary keeps the decision boundary and removes private detail", () 
   assert.equal(summary.kind, "better-harness.session-usage-summary");
   assert.equal(summary.selection.complete, true);
   assert.equal(summary.usageEfficiency.candidateCount, 1);
+  assert.deepEqual(summary.usageEfficiency.tokenTotals, { inputTokens: 120, outputTokens: 30 });
+  assert.deepEqual(summary.usageEfficiency.modelUsage[0].tokenTotals, { inputTokens: 120, outputTokens: 30 });
   assert.equal(summary.evidenceBoundary.requiresSemanticReview, true);
   assert.deepEqual(summary.evidenceBoundary.warningCodes, ["missing-optional-root"]);
   assert.doesNotMatch(JSON.stringify(summary), /Users\/private|private-session-id|\.qoder/);
+});
+
+test("Copilot usage summary omits unobserved input and cache token fields", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "better-harness-copilot-usage-"));
+  const workspace = path.join(root, "workspace");
+  const home = path.join(root, ".copilot");
+  const sessionDir = path.join(home, "session-state", "session-a");
+  await mkdir(workspace, { recursive: true });
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, "workspace.yaml"), `id: session-a\ncwd: ${workspace}\n`);
+  await writeJsonl(path.join(sessionDir, "events.jsonl"), [
+    { type: "user.message", timestamp: "2026-07-20T01:00:00.000Z", data: { content: "review usage" } },
+    {
+      type: "assistant.message",
+      timestamp: "2026-07-20T01:00:01.000Z",
+      data: {
+        content: "done",
+        model: "copilot-model",
+        messageId: "message-a",
+        requestId: "request-a",
+        outputTokens: 128,
+      },
+    },
+  ]);
+
+  try {
+    const result = runCli([
+      "session-analysis",
+      "usage-summary",
+      "--platform", "copilot",
+      "--workspace", workspace,
+      "--home", home,
+      "--format", "json",
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.usageEfficiency.coverage.responseCount, 1);
+    assert.deepEqual(payload.usageEfficiency.tokenTotals, { outputTokens: 128 });
+    assert.deepEqual(payload.usageEfficiency.modelUsage[0].tokenTotals, { outputTokens: 128 });
+    assert.equal(payload.evidenceBoundary.exactCostAvailable, false);
+    assert.ok(payload.evidenceBoundary.warningCodes.includes("copilot-per-response-usage-partial"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("public usage summary is read-only and emits compact JSON", async () => {

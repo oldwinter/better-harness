@@ -422,9 +422,11 @@ async function probeSessionDirectory(sessionDir, workspace) {
  * The payload populates the canonical `session-core-facts` transcript fields so
  * public facts never report unmapped evidence as a confirmed zero. Copilot has
  * no terminal source, so `terminalOnly` is a measured zero rather than an
- * unknown, and sessions with a missing or empty transcript surface as
- * `unreadable`. Copilot-specific counters are kept alongside for warnings and
- * are dropped by the bounded public schema.
+ * unknown. Sessions with a missing or empty transcript surface as `unreadable`
+ * when no time window applies and remain counted as time-unobserved when a
+ * bounded facts window cannot establish their relevance. Copilot-specific
+ * counters are kept alongside for warnings and are dropped by the bounded
+ * public schema.
  */
 function buildCopilotSourceCoverage({ scope, roots, matched, inWindow, inWindowProbes = [] }) {
   const root = roots.find((entry) => entry.kind === "copilot-session-jsonl");
@@ -432,7 +434,7 @@ function buildCopilotSourceCoverage({ scope, roots, matched, inWindow, inWindowP
   const withTranscript = matched.filter((probe) => probe.transcriptAvailable);
   const withoutTranscript = workspaceSessions - withTranscript.length;
   const timeUnobservedProbes = matched.filter((probe) => !probe.firstSeen && !probe.lastSeen);
-  const timeUnobserved = withTranscript.filter((probe) => !probe.firstSeen && !probe.lastSeen).length;
+  const timeUnobserved = timeUnobservedProbes.length;
   const emptyTranscripts = withTranscript.filter((probe) => probe.records === 0).length;
   const requestedWindow = scope.sinceTime !== null || scope.untilTime !== null;
 
@@ -652,7 +654,7 @@ export class CopilotSessionAnalyzer extends SessionAnalyzer {
     if (coverage.transcript.timeUnobservedSessions > 0) {
       warnings.push({
         code: "copilot-session-timestamps-unobserved",
-        message: `Copilot event timestamps were unobserved in ${coverage.transcript.timeUnobservedSessions} matched transcripts.`,
+        message: `Copilot event timestamps were unobserved in ${coverage.transcript.timeUnobservedSessions} matched sessions.`,
       });
     }
     return warnings;
