@@ -106,15 +106,15 @@
     "test:dsh-configured-assets-native": "node scripts/dsh-configured-assets/native-smoke.mjs",
     "test:dsh-native": "node scripts/dsh-skill-discovery/native-smoke.mjs"
   },
-  "packageManager": "npm@10.9.3",
+  "packageManager": "npm@12.0.2",
   "publishConfig": {
     "access": "public",
     "provenance": true,
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=22.20.0 <25.0.0",
-    "npm": ">=10.9.3 <12.0.0"
+    "node": ">=22.22.2 <25.0.0",
+    "npm": ">=12.0.2 <13.0.0"
   },
   "dependencies": {
     "@vscode/tree-sitter-wasm": "0.3.1",

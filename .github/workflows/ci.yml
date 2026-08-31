@@ -21,11 +21,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            node: 22.20.0
+            node: 22.23.2
           - os: macos-latest
-            node: 22.20.0
+            node: 22.23.2
           - os: windows-latest
-            node: 22.20.0
+            node: 22.23.2
           - os: ubuntu-latest
             node: 24.x
     runs-on: ${{ matrix.os }}
@@ -57,10 +57,10 @@ jobs:
       - name: Test Harness Studio package
         run: npm run harness-studio:test
       - name: Install Chromium for Harness Studio browser test
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22.20.0' }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22.23.2' }}
         run: npx playwright install --with-deps chromium
       - name: Test Harness Studio browser interaction
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22.20.0' }}
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22.23.2' }}
         run: npm run harness-studio:test:browser
       - name: Upload JUnit test results
         if: ${{ always() }}
