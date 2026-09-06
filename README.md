@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Better Harness logo" width="56" height="56">
+</p>
+
 <h1 align="center">Better Harness</h1>
 
 <p align="center">
@@ -5,40 +9,50 @@
 </p>
 
 <p align="center">
-  <strong>See how your AI coding workflow works—and make it better, one step at a time.</strong>
+  <strong>Delegate coding to agents. Improve the loop around them.</strong>
 </p>
 
 <p align="center">
-  Better Harness reviews how coding agents understand tasks, make changes, verify
-  results, deliver safely, and learn—then shows what to improve next, with every
-  finding tied to visible evidence.
+  Better Harness provides open-source insights for the Agent Work Loop. It runs
+  through your Coding Agent and turns project and session evidence into prioritized
+  improvements and verifiable next steps. Missing evidence stays explicit.
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/@qoder-ai/better-harness"><img src="https://img.shields.io/npm/v/@qoder-ai/better-harness.svg" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D22.20.0-brightgreen.svg" alt="Node.js >= 22.20.0"></a>
 </p>
 
 <p align="center">
-  <a href="https://qoderai.github.io/better-harness/">Website</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#see-it-in-action">Demo</a> ·
-  <a href="#why-better-harness">Why</a> ·
-  <a href="#what-is-open">What's open</a> ·
-  <a href="#installation">Installation</a> ·
-  <a href="docs/adapters/README.md">Host support</a> ·
-  <a href="roadmap.md">Roadmap</a> ·
-  <a href="docs/community.md">Contribute</a>
+  <a href="https://qoderai.github.io/better-harness/?utm_source=github&utm_medium=referral&utm_campaign=repository_landing&utm_content=readme_hero">Website</a> ·
+  <a href="#quick-start">Choose your host</a> ·
+  <a href="#see-it-in-action">Sample report</a> ·
+  <a href="https://qoderai.github.io/better-harness/docs/introduction">Docs</a>
 </p>
+
+## Quick start
+
+Analyze and improve your coding workflow with: [Claude Code](#claude-code), [Codex Desktop](#codex-desktop), [Codex CLI](#codex-cli), [Qoder Desktop/CLI](#qoder), [Cursor](#cursor), or [GitHub Copilot CLI](#github-copilot).
+
+Choose the host you already use to get its exact installation, verification,
+invocation, and report-output steps. Better Harness does not use one universal
+entrypoint across every host.
+
+This README shows inline setup for the most common hosts. Additional supported
+hosts (Qwen Code, Pi, Kimi Code, WorkBuddy, and Grok) keep their steps and
+boundaries in the [installation guide](docs/docs/installation.mdx) and the
+[public Host Adapter Matrix](docs/docs/hosts/adapter-matrix.md); see
+[More adapters](#more-adapters). README placement is a display choice, not a
+support-level claim.
+
+Better Harness scopes behavior claims to relevant Task Episodes and the
+surrounding project mechanisms. Qoder and Cursor produce host-native Canvas
+reports; Claude Code, Codex, Qwen Code, GitHub Copilot, and Kimi Code produce
+self-contained HTML with paired Markdown. Missing or partial evidence remains
+explicit. See the [Host Adapter Matrix](docs/adapters/README.md) for current
+coverage and output differences.
 
 ## See it in action
-
-Ask `/better-harness` to review the current task and its surrounding project
-Harness, then generate a durable report:
-
-```text
-/better-harness review this project's AI coding workflow and generate a report
-```
 
 The report keeps missing evidence explicit and turns supported gaps into
 prioritized findings with an impact, expected output, scoped repair, and
@@ -53,15 +67,27 @@ acceptance checks.
   (<a href="assets/demo/better-harness-report.html">source</a>).</sub>
 </p>
 
+For delivery tracing, the interactive [Harness Inspector](https://qoderai.github.io/better-harness/inspector/)
+follows product intent through agent activity, sessions, files, and commits in
+a read-only workspace, keeping evidence strength and limitations visible:
+
+<p align="center">
+  <a href="https://qoderai.github.io/better-harness/inspector/"><img src="docs/assets/harness-inspector/session-view.png" alt="Harness Inspector session view: a synchronized timeline of prompts, tool calls, and commits with the Evidence Drawer explaining each link" width="900"></a>
+</p>
+
+<p align="center">
+  <sub><a href="https://qoderai.github.io/better-harness/inspector/">Open the interactive Harness Inspector sample</a> (fictional English data; it never reads your workspace).</sub>
+</p>
+
 After you have comparable reports over time, the history view shows how the five
 Agent Work Loop dimensions move:
 
 <p align="center">
-  <a href="dev/terminal-demo/README.md"><img src="assets/demo/twenty-history.gif" alt="Better Harness terminal history demo showing five Agent Work Loop dimensions over time" width="900"></a>
+  <a href="dev/terminal-demo/README.md"><img src="assets/demo/twenty-history.png" alt="Static final frame of Better Harness report history showing five Agent Work Loop dimensions over time" width="900"></a>
 </p>
 
-The animation replays historical Harness reports. It shows recorded trends, not
-causal proof of improvement. [See how the demo was recorded](dev/terminal-demo/README.md).
+The static final frame summarizes historical Harness reports. It shows recorded
+trends, not causal proof of improvement. [See how the demo was recorded](dev/terminal-demo/README.md).
 
 ## Why Better Harness?
 
@@ -75,10 +101,11 @@ weak point:
 - 🧠 **Lessons lost** — the same friction comes back on the next task.
 
 Reviewing only the final diff misses these system-level problems. Better Harness
-reviews the workflow itself: it gathers project evidence (and session evidence
-where supported), evaluates five connected dimensions, and turns concrete gaps
-into prioritized findings — each tied to its evidence, expected outcome, repair
-boundary, and validation route, so a team can improve one issue at a time.
+analyzes the workflow around the diff: it gathers project evidence (and session
+evidence where supported), evaluates five connected dimensions, and turns
+concrete gaps into prioritized findings — each tied to its evidence, expected
+outcome, repair boundary, and validation route, so a team can improve one issue
+at a time.
 
 ## How Better Harness works
 
@@ -89,7 +116,7 @@ after the agent acts:
 
 - **Feedforward guides** — `AGENTS.md`, specs, Skills, and acceptance criteria
   steer the agent before it acts.
-- **Feedback sensors** — linters, tests, Hooks, and review agents observe results
+- **Feedback sensors** — linters, tests, Hooks, and evaluation agents observe results
   and help the agent self-correct.
 
 Across that loop, it evaluates five parts of delivery — the **Agent Work Loop**:
@@ -141,32 +168,6 @@ The architecture keeps the three evidence domains independent until unified
 analysis by the lead agent. Every result retains a visible evidence source,
 owner, and validation route.
 
-## Quick start
-
-Pick your coding agent — you can be looking at your first report in minutes:
-
-| Coding agent | Setup |
-| --- | --- |
-| **Claude Code** | Add the repository marketplace, install `better-harness@better-harness`, start a new session, then use the report prompt below. |
-| **Codex Desktop** | Add the repository under **Settings > Plugins > + Add > From Marketplace**, install Better Harness, start a new task, then invoke `@better-harness`. |
-| **Codex CLI** | Add the Git marketplace, run `codex plugin add better-harness@better-harness`, then invoke `$better-harness:better-harness`. |
-| **Qoder Desktop / CLI** | Nothing to install when Qoder Desktop is installed — Better Harness is built in and available to both. Open your repository and use the report prompt below. |
-| **GitHub Copilot CLI** | Add the repository marketplace, install `better-harness@better-harness`, start a new session, then use the report prompt below. |
-| **Cursor** | Load the plugin from source — see [Installation](#installation). |
-
-Once installed, ask Better Harness to generate the host's durable report:
-
-```text
-/better-harness review this project's AI coding workflow and generate a report
-```
-
-Better Harness scopes behavior claims to relevant Task Episodes and the
-surrounding project mechanisms. Qoder produces a Canvas report; Claude Code,
-Codex, Cursor, Qwen Code, and GitHub Copilot produce self-contained HTML with
-paired Markdown. Missing or partial evidence remains explicit. See the
-[Host Adapter Matrix](docs/adapters/README.md) for current coverage and output
-differences.
-
 ## Installation
 
 Installation differs by coding agent. Install Better Harness separately for
@@ -195,10 +196,10 @@ claude plugin details better-harness@better-harness
 ```
 
 The details should include `Skills (1) better-harness`. Then start a new Claude
-session in the repository you want to review and run the report prompt:
+session in the repository you want to analyze and run the report prompt:
 
 ```text
-/better-harness review this project's AI coding workflow and generate a report
+/better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
 Claude Code defaults to a self-contained `report.html` with paired `report.md`
@@ -209,6 +210,8 @@ stays explicit rather than being inferred.
 
 ### Codex
 
+<a id="codex-desktop"></a>
+
 #### Codex Desktop
 
 1. Open **Settings > Plugins**.
@@ -217,16 +220,18 @@ stays explicit rather than being inferred.
    empty for this single-plugin repository.
 4. Select **Add marketplace**, then install **Better Harness** from the new
    marketplace.
-5. Start a new task in the repository you want to review and run the report
+5. Start a new task in the repository you want to analyze and run the report
    prompt:
 
 ```text
-@better-harness review this project's AI coding workflow and generate a report
+@better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
 Use `https://github.com/QoderAI/better-harness.git` with Git ref `main`.
 
 ![Codex Add plugin marketplace dialog with repository, Git ref, and optional sparse paths](assets/install/codex-add-marketplace.jpg)
+
+<a id="codex-cli"></a>
 
 #### Codex CLI
 
@@ -245,11 +250,11 @@ codex plugin list --marketplace better-harness
 codex plugin add better-harness@better-harness
 ```
 
-Start a new Codex task in the repository you want to review and run the report
+Start a new Codex task in the repository you want to analyze and run the report
 prompt:
 
 ```text
-$better-harness:better-harness review this project's AI coding workflow and generate a report
+$better-harness:better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
 Use the repository URL with `marketplace add`, not a raw `marketplace.json`
@@ -262,11 +267,11 @@ Better Harness is built into the [Qoder](https://qoder.com/) desktop app, so no
 Marketplace or local plugin installation is required there. Choose either
 entry point:
 
-1. **From a session:** Open the repository you want to review, start a new
+1. **From a session:** Open the repository you want to analyze, start a new
    session, and run the report prompt:
 
    ```text
-   /better-harness review this project's AI coding workflow and generate a report
+   /better-harness analyze this project's AI coding workflow and generate an evidence-backed report
    ```
 
 2. **From Quest (Qoder 1.18.0+):** Open Quest, then select
@@ -276,41 +281,60 @@ entry point:
 
 If Qoder Desktop is installed, Better Harness is already available in Qoder
 CLI. No marketplace or plugin installation is required. Start a new Qoder CLI
-session in the repository you want to review and run the report prompt:
+session in the repository you want to analyze and run the report prompt:
 
 ```text
-/better-harness review this project's AI coding workflow and generate a report
+/better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
-Only when using Qoder CLI without Qoder Desktop, add this repository as a
-marketplace and install Better Harness manually:
+Only when using Qoder CLI without Qoder Desktop, inspect the current manual
+installation disposition before following:
+
+##### From marketplace
 
 ```bash
-qodercli plugin marketplace add \
-  'https://github.com/QoderAI/better-harness.git'
+# Add the plugin marketplace source
+qodercli plugin marketplace add 'https://github.com/QoderAI/better-harness.git'
+
+# Install the plugin
 qodercli plugin install better-harness@better-harness
-```
 
-Verify the manual installation:
-
-```bash
+# Check installation
 qodercli plugin list
 ```
+
+##### From git
+
+```bash
+# Make sure directory exist
+mkdir -p $HOME/.qoder/plugins/marketplaces/
+
+git clone https://github.com/QoderAI/better-harness.git \
+  $HOME/.qoder/plugins/marketplaces/better-harness --depth 1
+
+qodercli plugin install $HOME/.qoder/plugins/marketplaces/better-harness
+```
+
+Replace `.qoder` to `.qoder-cn` in urls for Qoder CN series.
 
 Then start a new Qoder CLI session before using `/better-harness`.
 
 ### Cursor
 
-The Cursor plugin is not published to the marketplace yet. Load the
-source-local plugin for one Cursor Agent session:
+The Cursor plugin is not published to the marketplace. The repository carries
+the source-local manifest, but the current local Cursor help does not verify the
+historical `--plugin-dir` contract. Better Harness therefore reports the
+installation plan as unavailable instead of emitting that command:
 
 ```bash
 git clone https://github.com/QoderAI/better-harness.git
-cursor-agent --plugin-dir /path/to/better-harness
+better-harness plugin plan install --host cursor --surface agent --scope session
 ```
 
 Cursor session evidence is supported through workspace-matched transcripts,
-metadata, and audit logs. Partial or unavailable coverage remains explicit.
+metadata, and audit logs. A session that was loaded through a separately
+verified native route can be checked with `better-harness plugin verify --host
+cursor --surface agent`; partial or unavailable coverage remains explicit.
 
 ### GitHub Copilot
 
@@ -335,6 +359,50 @@ Copilot session evidence is supported through workspace-matched Copilot CLI
 transcripts under `~/.copilot/session-state/`. Copilot records no per-response
 token usage, and VS Code Copilot Chat has no supported durable transcript; both
 remain explicit evidence boundaries.
+
+### Inspect and plan plugin lifecycle changes (Beta)
+
+The standalone CLI can inspect local Better Harness installation evidence for
+every host without contacting a registry or changing host configuration:
+
+```bash
+better-harness plugin status --host all
+better-harness doctor --platform all
+```
+
+Build a host-specific install, update, or removal plan before using that host's
+native UI or CLI. Plans preserve native steps as typed argv data for deliberate
+external execution; the human view does not turn them into shell command
+strings, and Better Harness does not execute them:
+
+```bash
+better-harness plugin plan install --host qwen --surface cli --scope user
+better-harness plugin verify --host qwen --surface cli
+```
+
+Host differences remain explicit. Qoder Desktop is bundled, Cursor is
+session-only while its native command contract is being reconciled, Pi
+lifecycle commands without current native evidence remain manual or
+unavailable, and WorkBuddy has no managed Better Harness plugin lifecycle
+surface.
+
+### More adapters
+
+Beyond the hosts above, Better Harness also supports Qwen Code, Pi, Kimi Code,
+WorkBuddy, and Grok. Their exact install, invocation, and evidence boundaries
+live in the docs so this README stays focused:
+
+- **Qwen Code** — [installation guide](docs/docs/installation.mdx#qwen-code)
+  (`qwen extensions install QoderAI/better-harness`).
+- **Pi** — [Host Adapter Matrix](docs/docs/hosts/adapter-matrix.md#pi)
+  (`pi install <source>` or `pi -e <source>`).
+- **Kimi Code** — [Host Adapter Matrix](docs/adapters/README.md)
+  (`.kimi-plugin/plugin.json` plugin install).
+- **WorkBuddy** — [Host Adapter Matrix](docs/docs/hosts/adapter-matrix.md#workbuddy).
+- **Grok** — [Host Adapter Matrix](docs/docs/hosts/adapter-matrix.md#grok).
+
+Each produces a self-contained `report.html` with paired `report.md` and
+`findings.json`; missing or partial session evidence stays explicit.
 
 ## Develop and package from source
 
@@ -375,10 +443,10 @@ smallest surface that matches the improvement you want to make:
 | What you can contribute | Start here | Example contribution |
 | --- | --- | --- |
 | Workflow guidance and engineering practices | [`skills/`](skills/) or [`references/`](references/) | Add sourced guidance for a language, framework, review pattern, or recurring agent workflow. |
-| Review models and executable analysis | [`models/`](models/) or [`scripts/`](scripts/) | Add an evidence-backed review lens, detector, or agent-friendly analysis command with fixtures and tests. |
+| Evaluation models and executable analysis | [`models/`](models/) or [`scripts/`](scripts/) | Add an evidence-backed evaluation lens, detector, or agent-friendly analysis command with fixtures and tests. |
 | Delivery controls and host support | [`hooks/`](hooks/) or the [new Coding Agent guide](docs/adapters/contributing-new-coding-agent.md) | Add a narrow lifecycle check or document and validate evidence support for another Coding Agent host. |
 | Reports and visual language | [`templates/reporting/`](templates/reporting/) or [`templates/style/`](templates/style/) | Add a report mode, reusable reporting contract, or directive-only visual style with validation evidence. |
-| Examples and operating models | [`case-studies/`](case-studies/) | Share a redacted, evidence-bounded example of how a team applies agent review and delivery practices. |
+| Examples and operating models | [`case-studies/`](case-studies/) | Share a redacted, evidence-bounded example of how a team applies Agent Work Loop analysis and delivery practices. |
 
 To get started:
 

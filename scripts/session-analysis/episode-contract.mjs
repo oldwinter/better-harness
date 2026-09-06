@@ -39,6 +39,7 @@ const VALIDATION_PATTERNS = Object.freeze([
   ["go test", /\bgo\s+test\b/i],
   ["cargo test", /\bcargo\s+test\b/i],
   ["agent-lint", /\bagent-lint\b/i],
+  ["review-trigger", /\breview-trigger\b/i],
   ["typecheck", /\b(?:tsc|vue-tsc)\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+(?:typecheck|type-check|check|compile)\b/i],
   ["lint", /\b(?:eslint|ruff|flake8|pylint)\b|\b(?:npm|pnpm|yarn|bun)\s+run\s+lint\b/i],
   ["git diff --check", /\bgit\s+diff\b[^\n;&|]*\s--check\b/i],
@@ -53,6 +54,31 @@ export function eventMillis(event) {
   if (!value) return null;
   const millis = Date.parse(value);
   return Number.isNaN(millis) ? null : millis;
+}
+
+function lifecycleDurationObservation(group) {
+  const request = group.find((event) => event?.lifecyclePhase === "request" && eventMillis(event) !== null)
+    ?? group.find((event) => event?.lifecyclePhase === "pre" && eventMillis(event) !== null);
+  const startedAt = eventMillis(request);
+  if (startedAt === null) return null;
+  const completedAfterStart = (event, phase) => {
+    const completedAt = eventMillis(event);
+    return event?.lifecyclePhase === phase && completedAt !== null && completedAt >= startedAt;
+  };
+  const result = group.find((event) => completedAfterStart(event, "result"))
+    ?? group.find((event) => completedAfterStart(event, "post"));
+  const completedAt = eventMillis(result);
+  if (completedAt === null || completedAt < startedAt) return null;
+  return {
+    // The merged event is canonically the result, so the request stamp is the
+    // only honest start for a paired lifecycle. Consumers plotting a time axis
+    // must not read the completion stamp as the moment the call began.
+    startedAt,
+    durationMs: completedAt - startedAt,
+    durationSource: request?.lifecyclePhase === "request" && result?.lifecyclePhase === "result"
+      ? "transcript-pair"
+      : "lifecycle-pair",
+  };
 }
 
 export function eventEvidenceRefs(event) {
@@ -146,10 +172,13 @@ export function canonicalTaskKey(event) {
 }
 
 export function deduplicateLifecycleEvents(events = []) {
-  const groups = new Map();
+  const groups = [];
+  const activeGroups = new Map();
   const ungrouped = [];
 
-  for (const event of deduplicatePromptSubmissionEvents(events)) {
+  // Provider order carries lifecycle semantics; wall-clock observations may
+  // drift and are reserved for duration evidence and final presentation.
+  for (const event of events) {
     const invocation = event?.toolInvocationId ?? event?.requestId ?? event?.callId ?? null;
     const phase = event?.lifecyclePhase ?? null;
     if (!invocation || !phase || !["pre", "request", "post", "result"].includes(phase)) {
@@ -157,13 +186,19 @@ export function deduplicateLifecycleEvents(events = []) {
       continue;
     }
     const key = `${event.sessionId ?? "unknown"}:${invocation}`;
-    const group = groups.get(key) ?? [];
+    let group = activeGroups.get(key);
+    if (group?.some((candidate) => ["post", "result"].includes(candidate.lifecyclePhase))
+      && ["pre", "request"].includes(phase)) group = undefined;
+    if (!group) {
+      group = [];
+      groups.push(group);
+      activeGroups.set(key, group);
+    }
     group.push(event);
-    groups.set(key, group);
   }
 
   const merged = [];
-  for (const group of groups.values()) {
+  for (const group of groups) {
     group.sort(compareEvents);
     const canonical = group.findLast((event) => event.lifecyclePhase === "result")
       ?? group.findLast((event) => event.lifecyclePhase === "post")
@@ -171,6 +206,7 @@ export function deduplicateLifecycleEvents(events = []) {
     const refs = group.flatMap(eventEvidenceRefs);
     const permissionEvent = group.find((event) => event?.permissionDecision);
     const requestEvent = group.find((event) => event.lifecyclePhase === "pre" || event.lifecyclePhase === "request") ?? group[0];
+    const duration = lifecycleDurationObservation(group);
     merged.push({
       ...canonical,
       ...(requestEvent?.toolName && !canonical?.toolName ? { toolName: requestEvent.toolName } : {}),
@@ -183,6 +219,7 @@ export function deduplicateLifecycleEvents(events = []) {
       evidenceRefs: refs,
       ...(permissionEvent?.permissionDecision ? { permissionDecision: permissionEvent.permissionDecision } : {}),
       ...(permissionEvent?.permissionMode ? { permissionMode: permissionEvent.permissionMode } : {}),
+      ...(duration ?? {}),
       lifecycle: {
         preObserved: group.some((event) => event.lifecyclePhase === "pre" || event.lifecyclePhase === "request"),
         postObserved: group.some((event) => event.lifecyclePhase === "post" || event.lifecyclePhase === "result"),
@@ -191,7 +228,7 @@ export function deduplicateLifecycleEvents(events = []) {
     });
   }
 
-  return [...ungrouped, ...merged].sort(compareEvents);
+  return [...deduplicatePromptSubmissionEvents(ungrouped), ...merged].sort(compareEvents);
 }
 
 function deduplicatePromptSubmissionEvents(events) {
@@ -580,7 +617,6 @@ function learningSignalsFor(episode) {
     if (!patternId) return [];
     const signal = {
       patternId,
-      userCorrection: source.userCorrection === true,
       assetLoaded: source.assetLoaded === true,
       assetChanged: source.assetChanged === true,
       assetRelevant: source.assetRelevant === true,
@@ -592,6 +628,10 @@ function learningSignalsFor(episode) {
       tokens: source.tokens ?? 0,
       evidenceRefs: eventEvidenceRefs(event),
     };
+    if (typeof source.userCorrection === "boolean") {
+      signal.userCorrection = source.userCorrection;
+      signal.fieldProvenance = { userCorrection: "host-observed" };
+    }
     const asset = safeLearningAsset(source.asset);
     if (asset) signal.asset = asset;
     const textFields = ["normalizedSignature", "taskFamily", "repoArea", "changeType", "frictionType", "validationResult", "deliveryResult", "harnessVersion"];
@@ -601,12 +641,15 @@ function learningSignalsFor(episode) {
       if (value) signal[field] = value;
     }
     if (source.fieldProvenance && typeof source.fieldProvenance === "object" && !Array.isArray(source.fieldProvenance)) {
-      signal.fieldProvenance = Object.fromEntries(learningFields.flatMap((field) => {
+      signal.fieldProvenance = {
+        ...(signal.fieldProvenance ?? {}),
+        ...Object.fromEntries(learningFields.flatMap((field) => {
         const provenance = source.fieldProvenance[field];
         return ["host-observed", "deterministic-derived", "ai-reviewed"].includes(provenance)
           ? [[field, provenance]]
           : [];
-      }));
+        })),
+      };
     }
     return [signal];
   });
@@ -711,6 +754,8 @@ function publicEpisode(episode, platform) {
   const rawValidationSets = summarizeValidationSets(episode);
   const closure = closureFor(episode, changeSets, rawValidationSets);
   const permissionSummary = permissionBoundarySummary(episode.events);
+  const protectiveInterventionObserved = episode.events.some((event) =>
+    classifyExecutionSignal(event).kind.startsWith("protective-"));
   return {
     id: episode.id,
     sessionCount: episode.sessionIds.size,
@@ -730,6 +775,7 @@ function publicEpisode(episode, platform) {
     toolCalls: episode.events.filter((event) => event?.toolName || event?.functionCallName).length,
     lifecycleSignals: lifecycleSignalsFor(episode, platform),
     ...(permissionSummary ? { permissionSummary } : {}),
+    ...(protectiveInterventionObserved ? { protectiveInterventionObserved: true } : {}),
     learningSignals: learningSignalsFor(episode),
     evidenceRefs: episode.events.flatMap(eventEvidenceRefs),
   };

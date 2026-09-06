@@ -3,6 +3,8 @@ import { calculateExactModelCost } from "./model-pricing.mjs";
 import { buildDailyUsageActivity } from "./daily-usage.mjs";
 import { privacySafeUserInputSummary } from "./privacy-safe-text.mjs";
 import { sessionAnalysisRef } from "./session-ref.mjs";
+import { buildToolCallTrace } from "./tool-call-trace.mjs";
+import { responseIdentityKeys } from "./usage-records.mjs";
 
 export const SESSION_EFFICIENCY_SCHEMA_VERSION = 1;
 
@@ -34,7 +36,11 @@ export function buildSessionEfficiencySignal(sessions = [], events = [], options
   const longActiveRows = rows.filter((row) => row.longActive);
   const longWallRows = rows.filter((row) => row.longWall);
   const longActiveIds = new Set(longActiveRows.map((row) => row.id));
-  const candidates = selectCandidates(rows, Number(options.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT));
+  const candidates = selectCandidates(rows, Number(options.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT))
+    .map((row) => ({
+      ...row,
+      toolTrace: buildToolCallTrace(eventsBySession.get(row.id) ?? [], options.toolCallTrace),
+    }));
 
   return {
     schemaVersion: SESSION_EFFICIENCY_SCHEMA_VERSION,
@@ -217,14 +223,6 @@ function deduplicateModelRequests(events) {
     addTimeBucket(output[index], index, timeBuckets);
   }
   return output;
-}
-
-function responseIdentityKeys(event) {
-  const session = event?.sessionId ?? "unknown";
-  return [
-    event?.responseId ? `${session}:response:${event.responseId}` : null,
-    event?.requestId ? `${session}:request:${event.requestId}` : null,
-  ].filter(Boolean);
 }
 
 function responseTimestamp(event) {

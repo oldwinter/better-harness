@@ -1,3 +1,6 @@
+import { formatHostList, HOST_CAPABILITIES, hostIdsFor } from "../host-support/index.mjs";
+import { PLUGIN_COMMAND_MANIFEST } from "../plugin-lifecycle/command-manifest.mjs";
+
 export const FORMAT_VERSION = "1.0";
 export const CLI_NAME = "better-harness";
 export const COMMAND_AUDIENCES = Object.freeze(["workflow", "advanced", "maintainer"]);
@@ -27,6 +30,26 @@ const COMMANDS = [
     aliases: [{ name: "customize", hidden: true }],
   },
   {
+    name: "plugin",
+    kind: "group",
+    audience: "advanced",
+    summary: "Inspect, plan, and verify the Better Harness plugin lifecycle without applying changes.",
+    description: "Normalize Better Harness installation evidence across Coding Agent hosts, emit read-only native lifecycle plans, and verify local plugin assets without executing host commands.",
+    subcommands: PLUGIN_COMMAND_MANIFEST.map(({ name, audience, entryScript: script, summary }) => ({
+      name,
+      audience,
+      script,
+      summary,
+    })),
+  },
+  {
+    name: "doctor",
+    kind: "direct",
+    audience: "workflow",
+    script: "harness-doctor/cli.mjs",
+    summary: "Run bounded read-only Better Harness runtime and host diagnostics.",
+  },
+  {
     name: "agent-lint",
     kind: "direct",
     audience: "advanced",
@@ -48,11 +71,54 @@ const COMMANDS = [
     summary: "Detect dependency governance files, automation, audit signals, and stale dependency evidence.",
   },
   {
+    name: "commit-session-link",
+    kind: "direct",
+    audience: "advanced",
+    script: "commit-session-link/cli.mjs",
+    summary: "Correlate local git commits with discovered coding-agent sessions and render a commit-view HTML report.",
+    subcommands: [
+      {
+        name: "correlate",
+        audience: "advanced",
+        script: "commit-session-link/cli.mjs",
+        summary: "Emit ranked commit-to-session matches with trailer, time, file, and cwd evidence as JSON.",
+      },
+      {
+        name: "render",
+        audience: "advanced",
+        script: "commit-session-link/cli.mjs",
+        summary: "Write a self-contained commit-view HTML report for one commit and its linked sessions.",
+      },
+      {
+        name: "render-session",
+        audience: "advanced",
+        script: "commit-session-link/cli.mjs",
+        summary: "Write a self-contained Session Viewer with activity, tool-call trace, and linked-commit markers.",
+      },
+    ],
+  },
+  {
+    name: "harness-inspector",
+    kind: "direct",
+    audience: "advanced",
+    script: "harness-inspector/cli.mjs",
+    summary: "Inspect feature, Story, prompt, session, tool-call, and commit provenance by product tree or date.",
+    aliases: [{ name: "inspector", hidden: true }],
+    subcommands: [
+      {
+        name: "render",
+        audience: "advanced",
+        script: "harness-inspector/cli.mjs",
+        summary: "Write a self-contained Harness Inspector with Feature Tree and Date scope pickers.",
+      },
+    ],
+  },
+  {
     name: "session-analysis",
     kind: "direct",
     audience: "advanced",
     script: "session-analysis.mjs",
-    summary: "Collect and normalize Qoder, Codex, Claude, Cursor, Qwen, and Copilot session evidence.",
+    summary: `Collect and normalize ${formatHostList(hostIdsFor(HOST_CAPABILITIES.SESSION_ANALYSIS), { displayNames: true, conjunction: "and" })} session evidence.`,
     subcommands: [
       {
         name: "sources",
@@ -170,11 +236,18 @@ const COMMANDS = [
         description: "Return versioned Session Evidence, Project Harness, and Agent Customize envelopes with explicit lane status and unchanged diagnostic commands.",
       },
       {
+        name: "workspace-topology",
+        audience: "advanced",
+        script: "workspace-topology/cli.mjs",
+        summary: "Resolve the Git-aware workspace target and member topology.",
+        description: "Report the canonical repository target, workspace members, instruction scopes, bounded inventory coverage, and path-scoped analysis contract without mutating the workspace.",
+      },
+      {
         name: "analyze",
         audience: "workflow",
         script: "harness-analysis/report-run.mjs",
         summary: "Return a neutral, budgeted Harness evidence brief.",
-        description: "Scan evidence read-only and return bounded natural text for AI interpretation, plus exact report summary facts in JSON mode; explicit Qoder canvas-out initializes them and replace-canvas refreshes only that authorized path.",
+        description: "Scan evidence read-only and return bounded natural text for AI interpretation, plus exact report summary facts in JSON mode; explicit Qoder or Cursor canvas-out initializes them and replace-canvas refreshes only that authorized path.",
       },
       {
         name: "checkup",
@@ -198,6 +271,13 @@ const COMMANDS = [
         description: "Collect repository, practice, and session candidates into report.source.json while preserving evidence boundaries.",
       },
       {
+        name: "source-review",
+        audience: "maintainer",
+        script: "harness-analysis/report-source/cli.mjs",
+        summary: "Create, compile, and apply a bounded report-source review.",
+        description: "Expose an explicit local create, caller-authored decision, and confirmed apply lifecycle without calling a model or merging native evidence aliases into the outer evidence namespace.",
+      },
+      {
         name: "task-loop-report",
         audience: "maintainer",
         script: "harness-analysis/task-loop-report.mjs",
@@ -209,7 +289,7 @@ const COMMANDS = [
         audience: "advanced",
         script: "harness-analysis/render-report.mjs",
         summary: "Render reviewed findings data into report artifacts.",
-        description: "Render reviewed findings.json data into qoder-canvas, markdown, or html, and optionally run the selected validators.",
+        description: "Render reviewed findings.json data into qoder-canvas, cursor-canvas, markdown, or html, and optionally run the selected validators.",
       },
       {
         name: "preview-canvas",
@@ -360,6 +440,21 @@ export function commandMetadata(name, { audience = "all" } = {}) {
   }
   const metadata = COMMAND_METADATA.find((entry) => entry.name === command.name);
   return filterCommandAudience(metadata, normalizedAudience);
+}
+
+export function commandPathMetadata(name, subcommandName, { audience = "all" } = {}) {
+  const command = commandMetadata(name, { audience });
+  if (!command || subcommandName === undefined) {
+    return command;
+  }
+  const subcommand = command.subcommands?.find((entry) => entry.name === subcommandName);
+  if (!subcommand) {
+    return undefined;
+  }
+  return {
+    ...subcommand,
+    path: [command.name, subcommand.name],
+  };
 }
 
 export function directDispatchFor(name, subcommandName) {

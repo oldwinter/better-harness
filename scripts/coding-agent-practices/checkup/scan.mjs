@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { collectAgentCustomizeInventory } from "../../agent-customize/index.mjs";
 import { runAgentLint } from "../../agent-lint/index.mjs";
+import { normalizedHostHomeOptions } from "../../host-support/index.mjs";
 import { createAnalyzer } from "../../session-analysis.mjs";
 import {
   HOOK_RECOMMENDED_LIMIT,
@@ -15,8 +16,10 @@ import {
   assertFindingStatus,
   countBy,
   digest,
+  inventoryProviderHome,
   normalizeCheckupOptions,
   publicSource,
+  resolveProviderHome,
   safeLabel,
   shortHash,
 } from "./contract.mjs";
@@ -59,18 +62,23 @@ function sourceIdentity(item) {
   return [item.kind, item.scope, item.name, item.sourceLabel, item.ownerId].filter(Boolean).join(":");
 }
 
-function relativeSourceRef(item, inventory) {
+function relativeSourceRef(item, inventory, provider) {
   if (!item.filePath || item.scope === "plugin") return null;
   const filePath = path.resolve(item.filePath);
+  const providerHome = inventoryProviderHome(provider, inventory);
   const roots = [
     { base: "workspace", root: inventory.workspace },
-    { base: "provider-home", root: inventory.qoderHome },
+    { base: "provider-home", root: providerHome },
   ].filter((entry) => entry.root);
   for (const entry of roots) {
     const root = path.resolve(entry.root);
     const relativePath = path.relative(root, filePath);
     if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
-      return { base: entry.base, relativePath: relativePath.split(path.sep).join("/") };
+      return {
+        base: entry.base,
+        relativePath: relativePath.split(path.sep).join("/"),
+        provider: String(provider ?? inventory.provider ?? "").toLowerCase() || undefined,
+      };
     }
   }
   return null;
@@ -127,7 +135,7 @@ function publicAsset(item, ownerId, sourceRef = null) {
   };
 }
 
-function configuredAssets(inventory = {}) {
+function configuredAssets(inventory = {}, provider = inventory.provider) {
   const assets = [];
   const plugins = Array.isArray(inventory.plugins) ? inventory.plugins : [];
   for (const plugin of plugins) {
@@ -140,7 +148,7 @@ function configuredAssets(inventory = {}) {
       const ownerId = owner
         ? publicAsset({ ...owner, kind: "plugin", scope: pluginScope(owner) }).id
         : undefined;
-      assets.push(publicAsset(item, ownerId, relativeSourceRef(item, inventory)));
+      assets.push(publicAsset(item, ownerId, relativeSourceRef(item, inventory, provider)));
     }
   }
   const projectMcpNames = new Set(
@@ -755,7 +763,7 @@ export function buildCheckupScan({
     minimumSessions: normalized.minimumSessions,
     newInstallGraceDays: normalized.newInstallGraceDays,
   };
-  const assets = configuredAssets(inventory);
+  const assets = configuredAssets(inventory, normalized.provider);
   const observed = observedIndexes(inventory, sessionResult.facets);
   const repeatedFrictionTriage = normalized.frictionSignals.length > 0
     ? buildRepeatedFrictionTriage({
@@ -848,6 +856,7 @@ export function buildCheckupScan({
 
 export async function runCheckupScan(options = {}, dependencies = {}) {
   const normalized = normalizeCheckupOptions(options);
+  const homeOptions = normalizedHostHomeOptions(normalized, normalized.provider);
   const collectInventory = dependencies.collectInventory ?? collectAgentCustomizeInventory;
   const lint = dependencies.runLint ?? runAgentLint;
   const analyzer = dependencies.analyzer ?? (await createAnalyzer(normalized.provider));
@@ -855,21 +864,16 @@ export async function runCheckupScan(options = {}, dependencies = {}) {
     dependencies.inventory ?? collectInventory({
       provider: normalized.provider,
       workspace: normalized.workspace,
-      qoderHome: normalized.qoderHome,
+      ...homeOptions,
       qoderSharedClientCacheRoot: normalized.qoderSharedClientCacheRoot,
-      codexHome: normalized.codexHome,
-      claudeHome: normalized.claudeHome,
       claudeStatePath: normalized.claudeStatePath,
-      cursorHome: normalized.cursorHome,
     }),
     dependencies.lintResult ?? lint({
       workspace: normalized.workspace,
       profile: "agents-md-review",
       provider: normalized.provider,
       includeUserHome: true,
-      qoderHome: normalized.qoderHome,
-      codexHome: normalized.codexHome,
-      claudeHome: normalized.claudeHome,
+      ...homeOptions,
       claudeStatePath: normalized.claudeStatePath,
     }),
     dependencies.assetLintResult ?? (dependencies.lintResult
@@ -879,16 +883,13 @@ export async function runCheckupScan(options = {}, dependencies = {}) {
           profile: "agent-assets-review",
           provider: normalized.provider,
           includeUserHome: true,
-          qoderHome: normalized.qoderHome,
-          codexHome: normalized.codexHome,
-          claudeHome: normalized.claudeHome,
+          ...homeOptions,
           claudeStatePath: normalized.claudeStatePath,
         })),
     dependencies.sessionResult ?? analyzer.analyze({
       command: "facets",
       workspace: normalized.workspace,
-      "qoder-home": normalized.qoderHome,
-      "claude-home": normalized.claudeHome,
+      ...homeOptions,
       since: normalized.since,
       until: normalized.until,
       limit: normalized.sessionLimit,
@@ -906,10 +907,22 @@ export async function runCheckupScan(options = {}, dependencies = {}) {
     options: normalized,
   });
   const fingerprints = {};
+  const providerHome = inventoryProviderHome(normalized.provider, inventory)
+    ?? (() => {
+      try {
+        return resolveProviderHome(normalized.provider, normalized);
+      } catch {
+        return null;
+      }
+    })();
   for (const sourceRef of scan.configuredInventory.assets.map((asset) => asset.sourceRef).filter(Boolean)) {
     const key = `${sourceRef.base}:${sourceRef.relativePath}`;
     if (fingerprints[key]) continue;
-    const root = sourceRef.base === "workspace" ? normalized.workspace : inventory.qoderHome;
+    const root = sourceRef.base === "workspace"
+      ? normalized.workspace
+      : sourceRef.base === "provider-home"
+        ? providerHome
+        : null;
     if (!root) continue;
     const filePath = path.resolve(root, sourceRef.relativePath);
     const relative = path.relative(path.resolve(root), filePath);

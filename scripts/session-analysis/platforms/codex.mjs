@@ -4,7 +4,7 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { SessionAnalyzer } from "../../session-analysis.mjs";
+import { SessionAnalyzer } from "../analyzer.mjs";
 import { parseArgs, parseBooleanFlag } from "../cli.mjs";
 import { forEachJsonLine, pathExists, walkFiles } from "../fs.mjs";
 import { mapToSortedObject, stableId } from "../ids.mjs";
@@ -22,6 +22,7 @@ import { buildLongSessionFacet } from "../long-sessions.mjs";
 import { topLifecycleDemandSignals } from "../lifecycle-demand-signals.mjs";
 import { topPlanningSignals } from "../planning-signals.mjs";
 import { parseResultFacts } from "../result-facts.mjs";
+import { CACHE_ACCOUNTING_MODE } from "../usage-records.mjs";
 import { selectSessions, selectionSummary } from "../selection.mjs";
 import { collectSessionSelectionEntries, selectSessionEntriesWithPlan } from "../selection-plan.mjs";
 import {
@@ -30,10 +31,24 @@ import {
   factsHydrationLimit,
   prepareFactsSessionInventory,
 } from "../session-core-facts.mjs";
+import {
+  bindSessionWorkspaceCwds,
+  hydrateWorkspaceSelection,
+  markSessionReadCoverage,
+  qualifyWorkspaceSessionInventory,
+  sessionWorkspaceCwd,
+  withWorkspaceMatchDiagnostics,
+  workspaceQualifiedSelectionEntries,
+  workspaceMatchScopeFromOptions,
+} from "../provider-runner.mjs";
+import { WORKSPACE_CWD_MATCH, classifyWorkspaceCwd } from "../workspace-match.mjs";
 
 const DEFAULT_LIMIT = 50;
 
 function inferSessionId(raw, fallback) {
+  // A child rollout records its own id beside the parent/root session_id.
+  // Keep the rollout id authoritative so independent cumulative counters never
+  // become one accounting or context-progression stream.
   const sessionMetaId = raw?.type === "session_meta" || raw?.event === "session_meta"
     ? raw?.payload?.id ?? raw?.payload?.session_id
     : null;
@@ -43,8 +58,8 @@ function inferSessionId(raw, fallback) {
     raw?.session_meta?.id ??
     raw?.session_meta?.session_id ??
     raw?.session_meta?.payload?.id ??
-    raw?.payload?.session_id ??
     sessionMetaId ??
+    raw?.payload?.session_id ??
     fallback ??
     null
   );
@@ -71,17 +86,85 @@ function inferType(raw, fallback = "record") {
   const payload = raw?.payload ?? {};
   if (outer === "event_msg") {
     if (payload.type === "user_message") return "user";
-    if (payload.type === "agent_message" || payload.type === "agent_reasoning") return "assistant";
+    if (payload.type === "agent_message") return "assistant";
+    if (payload.type === "agent_reasoning") return "reasoning";
     return payload.type ? `event.${payload.type}` : outer;
   }
   if (outer === "response_item") {
-    if (payload.type === "message") return payload.role === "user" ? "user" : "assistant";
+    if (payload.type === "message") {
+      if (payload.role === "user" || payload.role === "assistant") return payload.role;
+      if (payload.role === "developer" || payload.role === "system") return `context.${payload.role}`;
+      return "response.message";
+    }
     if (payload.type === "agent_message") return "assistant";
     if (payload.type === "custom_tool_call" || payload.type === "function_call") return "tool.call";
     if (payload.type === "custom_tool_call_output" || payload.type === "function_call_output") return "tool.result";
     return payload.type ? `response.${payload.type}` : outer;
   }
   return outer ?? payload?.type ?? fallback;
+}
+
+const CODEX_USAGE_FIELDS = Object.freeze({
+  inputTokens: "input_tokens",
+  outputTokens: "output_tokens",
+  cacheReadInputTokens: "cached_input_tokens",
+  cacheCreationInputTokens: "cache_write_input_tokens",
+  reasoningOutputTokens: "reasoning_output_tokens",
+  totalTokens: "total_tokens",
+});
+
+function normalizeCodexUsage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const usage = {};
+  for (const [target, source] of Object.entries(CODEX_USAGE_FIELDS)) {
+    if (!Object.hasOwn(value, source)) continue;
+    const number = Number(value[source]);
+    if (Number.isFinite(number) && number >= 0) usage[target] = Math.round(number);
+  }
+  return Object.keys(usage).length > 0 ? usage : null;
+}
+
+function hasCodexInvocationWork(usage) {
+  return [
+    usage?.inputTokens,
+    usage?.outputTokens,
+    usage?.cacheReadInputTokens,
+    usage?.cacheCreationInputTokens,
+    usage?.reasoningOutputTokens,
+  ].some((value) => Number.isFinite(value) && value > 0);
+}
+
+function contextItemCount(value) {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") return Object.keys(value).length;
+  return typeof value === "string" ? Number(value.trim().length > 0) : Number(value !== null && value !== undefined);
+}
+
+function codexContextLayers(raw) {
+  const outer = raw?.type ?? raw?.event ?? raw?._event ?? null;
+  const payload = raw?.payload ?? {};
+  if (outer === "response_item" && payload.type === "message"
+    && (payload.role === "developer" || payload.role === "system")) {
+    return [{ kind: `${payload.role}-message`, itemCount: 1, aggregation: "sum" }];
+  }
+  if (outer === "session_meta" && payload.base_instructions) {
+    return [{ kind: "base-instructions", itemCount: 1, aggregation: "max" }];
+  }
+  if (outer !== "world_state" || !payload.state || typeof payload.state !== "object") return [];
+  const state = payload.state;
+  const definitions = [
+    ["agents-md", ["agents_md"]],
+    ["managed-developer-instructions", ["managed_developer_instructions"]],
+    ["skills", ["skills", "host_skills", "orchestrator_skills"]],
+    ["plugins", ["plugins_instructions"]],
+    ["apps", ["apps_instructions"]],
+    ["permissions", ["permissions"]],
+  ];
+  return definitions.map(([kind, keys]) => ({
+    kind,
+    itemCount: keys.reduce((sum, key) => sum + contextItemCount(state[key]), 0),
+    aggregation: "max",
+  })).filter((layer) => layer.itemCount > 0);
 }
 
 function userVisibleAssistantText(raw) {
@@ -331,6 +414,11 @@ function isWorkspaceMatch(candidate, workspace) {
   return resolved === workspace || resolved.startsWith(`${workspace}${path.sep}`);
 }
 
+function isScopedWorkspaceMatch(candidate, scope) {
+  if (!scope?._workspaceMatchScope) return isWorkspaceMatch(candidate, scope.workspace);
+  return classifyWorkspaceCwd(candidate, scope._workspaceMatchScope) !== WORKSPACE_CWD_MATCH.UNMATCHED;
+}
+
 function createSessionRecord(sessionId, workspace) {
   return {
     sessionId,
@@ -340,6 +428,7 @@ function createSessionRecord(sessionId, workspace) {
     firstSeen: null,
     lastSeen: null,
     indexedEventCounts: new Map(),
+    workspaceCwdCandidates: new Map(),
   };
 }
 
@@ -352,6 +441,13 @@ function addSessionRef(sessions, sessionId, workspace, ref) {
   }
 
   session.sourceKinds.add(ref.kind);
+  if (typeof ref.cwd === "string" && ref.cwd.length > 0) {
+    const priority = Number(ref.cwdPriority ?? 0);
+    session.workspaceCwdCandidates.set(
+      ref.cwd,
+      Math.max(priority, session.workspaceCwdCandidates.get(ref.cwd) ?? Number.NEGATIVE_INFINITY),
+    );
+  }
   session.indexedEventCounts.set(ref.eventType, (session.indexedEventCounts.get(ref.eventType) ?? 0) + 1);
   mergeTimeRange(session, ref.timestamp);
 
@@ -382,7 +478,7 @@ function addSessionRef(sessions, sessionId, workspace, ref) {
 
 function finalizeSession(session) {
   const sourceKinds = [...session.sourceKinds].sort();
-  return {
+  const finalized = {
     sessionId: session.sessionId,
     workspace: session.workspace,
     sourceKinds,
@@ -411,6 +507,16 @@ function finalizeSession(session) {
       lastSeen: ref.lastSeen,
     })),
   };
+  const priorities = [...session.workspaceCwdCandidates.values()];
+  const strongest = priorities.length > 0 ? Math.max(...priorities) : null;
+  return bindSessionWorkspaceCwds(
+    finalized,
+    strongest === null
+      ? []
+      : [...session.workspaceCwdCandidates]
+        .filter(([_cwd, priority]) => priority === strongest)
+        .map(([cwd]) => cwd),
+  );
 }
 
 function summarizeEvents(events) {
@@ -591,6 +697,7 @@ async function firstJsonlRecord(filePath) {
 export class CodexSessionAnalyzer extends SessionAnalyzer {
   async resolveScope(options = {}) {
     const workspace = normalizeWorkspace(options.workspace);
+    const workspaceMatchScope = workspaceMatchScopeFromOptions(options);
     const since = normalizeCliDate(options.since, false);
     const until = normalizeCliDate(options.until, true);
     return {
@@ -606,6 +713,7 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
       includeGlobalCapabilities: parseBooleanFlag(
         options["include-global-capabilities"] ?? options.includeGlobalCapabilities ?? false,
       ),
+      _workspaceMatchScope: workspaceMatchScope,
     };
   }
 
@@ -688,7 +796,8 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
         continue;
       }
       await forEachJsonLine(root.path, (raw, line) => {
-        if (!isWorkspaceMatch(inferCwd(raw), scope.workspace)) {
+        const cwd = inferCwd(raw);
+        if (!isScopedWorkspaceMatch(cwd, scope)) {
           return;
         }
         const sessionId = inferSessionId(raw);
@@ -703,6 +812,8 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
           line,
           eventType: inferType(raw, "audit"),
           timestamp,
+          cwd,
+          cwdPriority: 1,
         });
       });
     }
@@ -715,7 +826,7 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
     }
     await forEachJsonLine(root.path, (raw, line) => {
       const cwd = inferCwd(raw);
-      const planningScope = isWorkspaceMatch(cwd, scope.workspace) ? "workspace" : "user-global";
+      const planningScope = isScopedWorkspaceMatch(cwd, scope) ? "workspace" : "user-global";
       if (planningScope === "user-global" && !scope.includeGlobalCapabilities) {
         return;
       }
@@ -732,6 +843,8 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
         eventType: "session-index",
         timestamp,
         planningScope,
+        cwd,
+        cwdPriority: 2,
       });
     });
   }
@@ -751,7 +864,7 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
       const first = await firstJsonlRecord(filePath);
       const timestamp = inferTimestamp(first);
       const cwd = inferCwd(first);
-      const planningScope = cwd && !isWorkspaceMatch(cwd, scope.workspace) ? "user-global" : "workspace";
+      const planningScope = cwd && !isScopedWorkspaceMatch(cwd, scope) ? "user-global" : "workspace";
       if (planningScope === "user-global" && !scope.includeGlobalCapabilities) {
         continue;
       }
@@ -766,6 +879,8 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
         eventType: "session-jsonl",
         timestamp,
         planningScope,
+        cwd,
+        cwdPriority: 3,
       });
     }
   }
@@ -773,6 +888,7 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
   normalizeEvent(raw, sourceRef, options = {}) {
     const type = inferType(raw);
     const text = messageText(raw);
+    const retainsDialogueText = ["user", "assistant", "last-prompt", "UserPromptSubmit"].includes(type);
     const event = {
       sessionId: inferSessionId(raw, sourceRef.sessionId),
       type,
@@ -787,8 +903,54 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
         seq: raw?.seq ?? null,
         type,
       },
-      summary: text ? `${type} message (${text.length} chars)` : type,
+      summary: retainsDialogueText && text ? `${type} message (${text.length} chars)` : type,
     };
+    const outer = raw?.type ?? raw?.event ?? raw?._event ?? null;
+    const payload = raw?.payload ?? {};
+    const contextLayers = codexContextLayers(raw);
+    if (contextLayers.length > 0) event.contextLayers = contextLayers;
+    if (outer === "session_meta") {
+      event.runtimeMetadata = {
+        ...(payload.model_provider ? { modelProvider: String(payload.model_provider) } : {}),
+        ...(payload.cli_version ? { cliVersion: String(payload.cli_version) } : {}),
+      };
+    }
+    if (outer === "turn_context") {
+      if (payload.model) event.model = String(payload.model);
+      event.runtimeMetadata = {
+        ...(payload.effort ? { effort: String(payload.effort) } : {}),
+      };
+    }
+    if (outer === "event_msg" && payload.type === "token_count") {
+      const info = payload.info && typeof payload.info === "object" ? payload.info : {};
+      const modelUsage = normalizeCodexUsage(info.total_token_usage);
+      const lastModelUsage = normalizeCodexUsage(info.last_token_usage);
+      const emptyInvocationSnapshot = lastModelUsage && !hasCodexInvocationWork(lastModelUsage);
+      const contextWindowTokens = Number(info.model_context_window);
+      if (modelUsage) {
+        event.modelUsage = modelUsage;
+        event.cacheAccountingMode = CACHE_ACCOUNTING_MODE.INCLUDED_IN_INPUT;
+        event.usageFieldsObserved = true;
+        event.usageCumulative = true;
+        event.usageBasis = "model-inference";
+        event.usageSource = "codex-rollout-token-count";
+      }
+      if (lastModelUsage && !emptyInvocationSnapshot) event.modelInvocationUsage = lastModelUsage;
+      if (lastModelUsage && !emptyInvocationSnapshot && Number.isFinite(contextWindowTokens) && contextWindowTokens > 0) {
+        event.currentContextUsage = {
+          usedTokens: Number(lastModelUsage.inputTokens) || 0,
+          windowTokens: Math.round(contextWindowTokens),
+          basis: "prompt-tokens",
+          source: "codex-rollout-token-count",
+          rawTextOmitted: true,
+        };
+      }
+      if (emptyInvocationSnapshot) {
+        event.emptyInvocationSnapshot = true;
+        event.usageProgressionExcluded = true;
+      }
+    }
+    if (outer === "compacted") event.compactionBoundary = true;
     const cwd = inferCwd(raw);
     if (cwd) event.cwd = cwd;
     if (type === "user" || type === "last-prompt" || type === "UserPromptSubmit") {
@@ -885,13 +1047,13 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
       if (raw?.permission_escalated === true || raw?.permissionEscalated === true
         || raw?.payload?.permission_escalated === true || raw?.payload?.permissionEscalated === true) event.permissionEscalated = true;
     }
-    if (text) {
+    if (retainsDialogueText && text) {
       event.contentLength = text.length;
     }
-    if (options.includeContent && text) {
+    if (options.includeContent && retainsDialogueText && text) {
       event.content = text;
     }
-    if (options.includeUserText && (type === "user" || type === "last-prompt" || type === "response_item" || type === "UserPromptSubmit")) {
+    if (options.includeUserText && (type === "user" || type === "last-prompt" || type === "UserPromptSubmit")) {
       const promptText = userText(raw);
       if (promptText) {
         event.userText = promptText;
@@ -926,25 +1088,50 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
     const includeContent = parseBooleanFlag(options["include-content"] ?? options.includeContent ?? false);
     const includeCommandText = parseBooleanFlag(options["include-command-text"] ?? options.includeCommandText ?? false);
     const includeUserText = parseBooleanFlag(options["include-user-text"] ?? options.includeUserText ?? false);
-    for (const ref of session.sourceRefs ?? []) {
+    const requestedMaxLines = Number(options.workspacePreflightMaxLines);
+    const preflight = Number.isFinite(requestedMaxLines) && requestedMaxLines > 0;
+    let remainingLines = preflight ? Math.trunc(requestedMaxLines) : null;
+    let truncated = false;
+    const refs = preflight
+      ? (session.sourceRefs ?? []).filter((ref) => ["codex-session-jsonl", "codex-archived-session"].includes(ref.kind))
+      : session.sourceRefs ?? [];
+    const identityCwd = scope._workspaceMatchScope
+      ? sessionWorkspaceCwd(session, scope._workspaceMatchScope)
+      : null;
+    const rootCandidate = scope._workspaceMatchScope
+      && classifyWorkspaceCwd(identityCwd, scope._workspaceMatchScope) === WORKSPACE_CWD_MATCH.ROOT_CANDIDATE;
+    for (const ref of refs) {
+      if (remainingLines !== null && remainingLines <= 0) {
+        truncated = true;
+        break;
+      }
       if (!ref.path.endsWith(".jsonl")) {
         continue;
       }
-      await forEachJsonLine(ref.path, (raw, line) => {
+      const readCoverage = await forEachJsonLine(ref.path, (raw, line) => {
         const sessionId = inferSessionId(raw, session.sessionId);
         if (sessionId !== session.sessionId) {
           return;
         }
-        if (!scope.includeGlobalCapabilities && inferCwd(raw) && !isWorkspaceMatch(inferCwd(raw), scope.workspace)) {
+        if (!scope.includeGlobalCapabilities
+          && !rootCandidate
+          && inferCwd(raw)
+          && !isScopedWorkspaceMatch(inferCwd(raw), scope)) {
           return;
         }
         const event = this.normalizeEvent(raw, { ...ref, line }, { includeContent, includeCommandText, includeUserText });
         if (withinTimeRange(event.timestamp, scope)) {
           events.push(event);
         }
-      });
+      }, remainingLines === null ? {} : { maxLines: remainingLines });
+      if (readCoverage.invalidLines > 0) truncated = true;
+      if (remainingLines !== null) {
+        if (readCoverage.lineCount > remainingLines) truncated = true;
+        remainingLines -= Math.min(readCoverage.lineCount, remainingLines);
+      }
     }
-    return events.sort((a, b) => (timestampMillis(a.timestamp) ?? 0) - (timestampMillis(b.timestamp) ?? 0));
+    const sorted = events.sort((a, b) => (timestampMillis(a.timestamp) ?? 0) - (timestampMillis(b.timestamp) ?? 0));
+    return markSessionReadCoverage(sorted, { truncated });
   }
 
   async analyze(options = {}) {
@@ -956,34 +1143,37 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
     const discoveredSessions = Array.isArray(options.sessionInventory)
       ? filterSessionsByScope(options.sessionInventory, scope)
       : filterSessionsByScope(await this.discoverSessions(scope, roots), scope);
+    const workspaceRun = await qualifyWorkspaceSessionInventory({
+      analyzer: this,
+      sessions: discoveredSessions,
+      scope,
+      options,
+    });
+    const qualifiedSessions = workspaceRun.sessions;
     const factsInventory = factsMode
-      ? prepareFactsSessionInventory(discoveredSessions, factsContext)
-      : { sessions: discoveredSessions, omitted: {} };
+      ? prepareFactsSessionInventory(qualifiedSessions, factsContext)
+      : { sessions: qualifiedSessions, omitted: {} };
     const sessions = factsInventory.sessions;
     const warnings = sourceWarnings(roots);
+    const resultBase = withWorkspaceMatchDiagnostics({
+      scope: publicScope(scope),
+      sources: roots.map(toPublicSource),
+      sessions,
+      facets: null,
+      warnings,
+    }, workspaceRun);
 
     if (options.command === "sources") {
-      return {
-        scope: publicScope(scope),
-        sources: roots.map(toPublicSource),
-        sessions,
-        facets: null,
-        warnings,
-      };
+      return resultBase;
     }
     if (options.command === "sessions") {
       const limit = options.limit === undefined ? null : Number(options.limit);
       return {
-        scope: publicScope(scope),
-        sources: roots.map(toPublicSource),
+        ...resultBase,
         sessions: Number.isFinite(limit) ? sessions.slice(0, limit) : sessions,
-        facets: null,
-        warnings,
       };
     }
 
-    const detailedSessions = [];
-    const events = [];
     const insightMode = options.command === "insights";
     const fileReadMode = options.command === "file-reads";
     const eventOptions = factsMode
@@ -991,7 +1181,12 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
       : options.command === "facets" || insightMode || fileReadMode
         ? { ...options, includeCommandText: true, includeUserText: true, includeContent: true }
         : options;
-    const selectionEntries = !factsMode && (options.selectionEntries ?? (
+    const suppliedSelectionEntries = workspaceQualifiedSelectionEntries(
+      options.selectionEntries,
+      sessions,
+      workspaceRun,
+    );
+    const selectionEntries = !factsMode && (suppliedSelectionEntries ?? (
       options.selectionPlan
         ? await collectSessionSelectionEntries({
             analyzer: this,
@@ -1008,53 +1203,54 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
           strategy: factsMode ? options.selection ?? "stratified" : options.selection,
           defaultLimit: factsMode ? 5 : DEFAULT_LIMIT,
         });
-    for (const session of selection.sessions) {
-      const sessionEvents = await this.readSession(session, scope, eventOptions);
-      for (const event of sessionEvents) {
-        events.push(event);
-      }
-      detailedSessions.push(this.mergeSession(sessionEvents, session));
-    }
+    const hydration = await hydrateWorkspaceSelection({
+      analyzer: this,
+      selection,
+      scope,
+      eventOptions,
+      workspaceRun,
+      options,
+    });
+    const effectiveSelection = hydration.selection;
+    const detailedSessions = hydration.detailedSessions;
+    const events = hydration.events;
 
     if (factsMode) {
-      return buildSessionCoreFacts({
+      return withWorkspaceMatchDiagnostics(buildSessionCoreFacts({
         scope,
         events,
-        selection,
+        selection: effectiveSelection,
         warnings,
         omitted: factsInventory.omitted,
         episodeLimit: options["episode-limit"] ?? options.episodeLimit ?? options.limit,
         debug: parseBooleanFlag(options.debug ?? false),
-      });
+      }), workspaceRun, hydration.hydrationQualifications);
     }
 
     if (fileReadMode) {
-      return {
-        scope: publicScope(scope),
-        sources: roots.map(toPublicSource),
+      return withWorkspaceMatchDiagnostics({
+        ...resultBase,
         sessions: detailedSessions,
-        selection: selectionSummary(selection),
+        selection: selectionSummary(effectiveSelection),
         fileReads: buildFileReadDiagnostics({
           scope: publicScope(scope),
           indexedSessions: sessions,
           sessions: detailedSessions,
           warnings,
           events,
-          selectionStrategy: selection.strategy,
-          selectionStrata: selection.strata,
+          selectionStrategy: effectiveSelection.strategy,
+          selectionStrata: effectiveSelection.strata,
           adapterVersion: "codex-v2",
         }),
-        warnings,
-      };
+      }, workspaceRun, hydration.hydrationQualifications);
     }
 
     const facets = buildFacets(sessions, detailedSessions, events);
     if (insightMode) {
-      return {
-        scope: publicScope(scope),
-        sources: roots.map(toPublicSource),
+      return withWorkspaceMatchDiagnostics({
+        ...resultBase,
         sessions: detailedSessions,
-        selection: selectionSummary(selection),
+        selection: selectionSummary(effectiveSelection),
         facets,
         insights: buildInsightPack({
           scope: publicScope(scope),
@@ -1063,22 +1259,19 @@ export class CodexSessionAnalyzer extends SessionAnalyzer {
           facets,
           warnings,
           events,
-          selectionStrategy: selection.strategy,
-          selectionStrata: selection.strata,
+          selectionStrategy: effectiveSelection.strategy,
+          selectionStrata: effectiveSelection.strata,
           adapterVersion: "codex-v2",
         }),
-        warnings,
-      };
+      }, workspaceRun, hydration.hydrationQualifications);
     }
 
-    return {
-      scope: publicScope(scope),
-      sources: roots.map(toPublicSource),
+    return withWorkspaceMatchDiagnostics({
+      ...resultBase,
       sessions: detailedSessions,
-      selection: selectionSummary(selection),
+      selection: selectionSummary(effectiveSelection),
       facets,
-      warnings,
-    };
+    }, workspaceRun, hydration.hydrationQualifications);
   }
 }
 

@@ -4,8 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
-import { pathExists } from "../session-analysis/fs.mjs";
-import { expandHome } from "../session-analysis/paths.mjs";
+import { expandHome, pathExists } from "../session-analysis/index.mjs";
 
 const execFileAsync = promisify(execFile);
 const STORAGE_PREFIX = "cursor.plugins.installedIds";
@@ -24,6 +23,10 @@ export function defaultCursorStateDbPath() {
   }
   const xdgConfig = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
   return path.join(xdgConfig, "Cursor", "User", "globalStorage", "state.vscdb");
+}
+
+export function resolveCursorStateDbPath(options = {}) {
+  return path.resolve(expandHome(options.stateDbPath ?? defaultCursorStateDbPath()));
 }
 
 function normalizeInstalledRecord(record) {
@@ -127,7 +130,7 @@ export async function readInstalledPluginState(options = {}) {
     };
   }
 
-  const stateDbPath = path.resolve(expandHome(options.stateDbPath ?? defaultCursorStateDbPath()));
+  const stateDbPath = resolveCursorStateDbPath(options);
   if (!(await pathExists(stateDbPath))) {
     return {
       records: undefined,

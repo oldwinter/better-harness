@@ -392,6 +392,7 @@ export async function scanPaths(pathsToScan = ["."], options = {}) {
       return {
         tool: "secret-scan.mjs",
         version: VERSION,
+        coverageStatus: coverageStatus(stats),
         summary: summarize([], stats),
         findings: [],
         stats,
@@ -415,10 +416,16 @@ export async function scanPaths(pathsToScan = ["."], options = {}) {
   return {
     tool: "secret-scan.mjs",
     version: VERSION,
+    coverageStatus: coverageStatus(stats),
     summary: summarize(filtered, stats),
     findings: filtered.map((finding) => publicFinding(finding, opts)),
     stats,
   };
+}
+
+function coverageStatus(stats) {
+  if (stats.errors.length === 0) return "complete";
+  return stats.scannedFiles > 0 ? "partial" : "failed";
 }
 
 function resolveHookPlatform({ platform, host } = {}) {
@@ -577,6 +584,11 @@ function isProtectedCredentialPath(filePath) {
   return PROTECTED_FILE_SEGMENTS.some((segment) => normalized === segment || normalized.endsWith(`/${segment}`) || normalized.includes(`/${segment}/`));
 }
 
+function recordCoverageGap(stats, file, reason) {
+  stats.skippedFiles += 1;
+  stats.errors.push(`${file}: ${reason}`);
+}
+
 async function collectFiles(absPath, out, opts, stats) {
   let stat;
   try {
@@ -587,14 +599,14 @@ async function collectFiles(absPath, out, opts, stats) {
   }
 
   if (stat.isSymbolicLink()) {
-    stats.skippedFiles += 1;
+    recordCoverageGap(stats, absPath, "symbolic-link scan targets are not inspected");
     return;
   }
   if (opts.containmentRoot) {
     try {
       const canonical = await fs.realpath(absPath);
       if (!isWithinRoot(opts.containmentRoot, canonical)) {
-        stats.skippedFiles += 1;
+        recordCoverageGap(stats, absPath, "scan target resolves outside the containment root");
         return;
       }
     } catch (error) {
@@ -632,6 +644,8 @@ async function collectFiles(absPath, out, opts, stats) {
         continue;
       }
       if (!shouldSkipFile(child, childStat, opts, stats)) out.push(child);
+    } else if (entry.isSymbolicLink()) {
+      await collectFiles(child, out, opts, stats);
     }
   }
 }
@@ -661,20 +675,20 @@ async function readScannableFile(file, opts, stats) {
   let canonical;
   let handle;
   try {
-    beforeOpen = await fs.lstat(file);
+    beforeOpen = await fs.lstat(file, { bigint: true });
     if (beforeOpen.isSymbolicLink() || !beforeOpen.isFile()) {
-      stats.skippedFiles += 1;
+      recordCoverageGap(stats, file, "scan target changed type before it could be read safely");
       return null;
     }
     canonical = await fs.realpath(file);
     if (opts.containmentRoot && !isWithinRoot(opts.containmentRoot, canonical)) {
-      stats.skippedFiles += 1;
+      recordCoverageGap(stats, file, "scan target resolves outside the containment root");
       return null;
     }
     handle = await openReadOnlyNoFollow(file);
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     if (!opened.isFile() || !sameFileIdentity(beforeOpen, opened)) {
-      stats.skippedFiles += 1;
+      recordCoverageGap(stats, file, "scan target changed while it was being opened");
       return null;
     }
     const buffer = await handle.readFile();
@@ -709,16 +723,17 @@ function isWithinRoot(root, target) {
 }
 
 function sameFileIdentity(beforeOpen, opened) {
-  const beforeIno = Number(beforeOpen?.ino ?? 0);
-  const openedIno = Number(opened?.ino ?? 0);
-  const beforeDev = Number(beforeOpen?.dev ?? 0);
-  const openedDev = Number(opened?.dev ?? 0);
-  if (beforeIno !== 0 || openedIno !== 0 || beforeDev !== 0 || openedDev !== 0) {
-    return beforeIno === openedIno && beforeDev === openedDev;
+  const beforeIno = beforeOpen?.ino ?? 0n;
+  const openedIno = opened?.ino ?? 0n;
+  const beforeDev = beforeOpen?.dev ?? 0n;
+  const openedDev = opened?.dev ?? 0n;
+  if (beforeDev !== 0n && openedDev !== 0n && beforeDev !== openedDev) return false;
+  if (beforeIno !== 0n || openedIno !== 0n) {
+    return beforeIno === openedIno;
   }
   return beforeOpen?.size === opened?.size
-    && beforeOpen?.mtimeMs === opened?.mtimeMs
-    && beforeOpen?.birthtimeMs === opened?.birthtimeMs;
+    && beforeOpen?.mtimeNs === opened?.mtimeNs
+    && beforeOpen?.birthtimeNs === opened?.birthtimeNs;
 }
 
 function makeFinding({ rule, file, secret, line, column, lineText, entropy, cwd }) {
@@ -924,7 +939,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (options.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   else process.stdout.write(printHuman(report, options));
 
-  return report.findings.some((finding) => shouldFailFinding(finding, options.failOn)) ? 2 : 0;
+  if (report.findings.some((finding) => shouldFailFinding(finding, options.failOn))) return 2;
+  return report.coverageStatus === "complete" ? 0 : 3;
 }
 
 function validateFailOn(failOn) {

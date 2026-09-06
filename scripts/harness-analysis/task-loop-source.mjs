@@ -7,25 +7,43 @@ import { fileURLToPath } from "node:url";
 import { createAnalyzer } from "../session-analysis.mjs";
 import { runAgentLint } from "../agent-lint/index.mjs";
 import { scanPaths } from "../agent-guardrails/secret-scan.mjs";
-import { listTrackedFiles } from "../core-change-watch/common.mjs";
+import {
+  listTrackedFiles,
+  resolveAnalysisScopeForOptions,
+  toAnalysisRelativePath,
+} from "../core-change-watch/common.mjs";
 import {
   collectProviderInventory,
   collectQoderInventory,
 } from "../coding-agent-practices/inventory.mjs";
+import {
+  formatHostList,
+  getHostDescriptor,
+  HOST_CAPABILITIES,
+  hostIdSetFor,
+  hostIdsFor,
+  hostPipeList,
+  normalizedHostHomeOptions,
+} from "../host-support/index.mjs";
 import { reviewAssetIntegrity } from "../coding-agent-practices/asset-integrity.mjs";
 import { projectCheckupReportEvidence } from "../coding-agent-practices/checkup/contract.mjs";
-import { buildTaskEpisodes, stableFingerprint } from "../session-analysis/episode-contract.mjs";
-import { buildObservationManifest } from "../session-analysis/observation-manifest.mjs";
-import { sanitizePrivateReviewText } from "../session-analysis/privacy-safe-text.mjs";
-import { sessionAnalysisRef } from "../session-analysis/session-ref.mjs";
-import { selectSessions } from "../session-analysis/selection.mjs";
 import {
   assertSessionSelectionBinding,
+  bindSessionSelection,
+  buildObservationManifest,
+  buildTaskEpisodes,
+  cloneSessionWithWorkspaceCwds,
+  leadAdmissionBinding,
   readSessionSelectionPlan,
   readSessionSelectionProfile,
   readSessionSelectionSnapshot,
   restoreSessionSelectionEntries,
-} from "../session-analysis/selection-plan.mjs";
+  sanitizePrivateReviewText,
+  selectSessions,
+  sessionAnalysisRef,
+  sessionPopulationDiscovery,
+  stableFingerprint,
+} from "../session-analysis/index.mjs";
 import {
   createHarnessReportSource,
   LEARNING_CAPTURE_FINDING_POLICY,
@@ -37,8 +55,9 @@ import {
 import { projectAgentLintPracticeEvidence } from "./practice-findings.mjs";
 import { loadPriorLearningCaptureState } from "./learning-capture-state.mjs";
 import { scanTaskLoopRepositoryEvidence } from "./task-loop-repository-evidence.mjs";
-import { buildLearningLoopReview } from "./learning-loop-candidates.mjs";
+import { buildLearningLoopReview, buildNativeLearningReviewPacket } from "./learning-loop-candidates.mjs";
 import { buildWorkflowDemandDiagnostics } from "./workflow-demand-diagnostics.mjs";
+import { findingTargetFromTopology } from "../workspace-topology/index.mjs";
 
 export const TASK_LOOP_SOURCE_ADAPTER_VERSION = "task-loop-source-v2";
 const DEFAULT_LIMIT = 40;
@@ -62,17 +81,22 @@ const REQUIRED_SOFTWARE_FLUENCY_CAPABILITIES = Object.freeze([
   "quality-gates",
   "safe-change",
 ]);
+const ASSET_PRACTICE_HOST_SET = hostIdSetFor(HOST_CAPABILITIES.ASSET_PRACTICES);
+const SESSION_HOSTS = hostIdsFor(HOST_CAPABILITIES.SESSION_ANALYSIS);
+const TASK_LOOP_INVENTORY_COLLECTORS = new Map([
+  ["qoder", collectQoderInventory],
+]);
 
 const HELP = `Usage: node scripts/harness-analysis/task-loop-source.mjs --workspace <target> --source <report.source.json> [options]
 
 Create a conservative Agent Work Loop report-source candidate from normalized
-Qoder, Codex, Claude, Cursor, Qwen, or Copilot sessions. It retains privacy-safe episode, change, validation,
+${formatHostList(SESSION_HOSTS, { displayNames: true })} sessions. It retains privacy-safe episode, change, validation,
 repair-candidate, and explicit host-decision identities. Task understanding,
 validation relevance, repair, delivery, recovery, and Learning Capture remain
 unobserved until the prepared source-bound review resolves them.
 
 Options:
-  --platform <qoder|codex|claude|cursor|qwen|copilot>
+  --platform <${hostPipeList(SESSION_HOSTS)}>
                                   Session platform (default: qoder)
   --workspace <path>            Target workspace (required)
   --source <path>               Candidate report.source.json path (required)
@@ -101,6 +125,7 @@ export function projectPracticeCoverageRows(practiceInventory, includeGlobalCapa
   const projectRows = includeGlobalCapabilities ? [...coverageRows] : coverageRows.filter((row) => {
     const scopes = rows(row?.scopes);
     return scopes.includes("Project")
+      || scopes.includes("Inherited")
       || scopes.includes("Plugin")
       || (row?.surface === "Hooks" && scopes.includes("Global"));
   });
@@ -156,7 +181,7 @@ function coveragePaths(repositoryEvidence, surface) {
     .filter((row) => {
       if (String(row?.surface ?? "").toLowerCase() !== surface.toLowerCase()) return false;
       const scopes = rows(row?.scopes).map((scope) => String(scope));
-      return scopes.length === 0 || scopes.includes("Project");
+      return scopes.length === 0 || scopes.includes("Project") || scopes.includes("Inherited");
     })
     .flatMap((row) => rows(row?.paths).map((item) => String(item ?? "").trim()).filter(Boolean))
     .filter((item, index, all) => all.indexOf(item) === index)
@@ -210,11 +235,30 @@ function isWithinRoot(root, target) {
 
 export async function collectTrackedSensitiveConfigFiles(
   workspace,
-  trackedFiles = listTrackedFiles(path.resolve(workspace)),
+  trackedFiles,
   fsApi = { lstat, realpath },
+  analysisScope,
+  topology,
 ) {
-  const root = await fsApi.realpath(path.resolve(workspace));
-  const candidates = trackedFiles
+  let resolvedScope = null;
+  if (analysisScope || trackedFiles === undefined) {
+    try {
+      resolvedScope = resolveAnalysisScopeForOptions({ cwd: workspace, analysisScope });
+    } catch (error) {
+      if ((analysisScope && topology?.gitRoot !== null) || error?.code !== "GIT_COMMAND_FAILED") throw error;
+      return {
+        files: [],
+        candidateCount: 0,
+        truncated: false,
+        skippedCount: 0,
+        errorCount: 1,
+      };
+    }
+  }
+  const root = await fsApi.realpath(resolvedScope?.targetRoot ?? path.resolve(workspace));
+  const inventory = trackedFiles ?? listTrackedFiles(resolvedScope.repoRoot, resolvedScope);
+  const candidates = inventory
+    .map((file) => resolvedScope?.kind === "path" ? toAnalysisRelativePath(file, resolvedScope) : file)
     .map((file) => String(file ?? "").replaceAll("\\", "/"))
     .filter((file) => SENSITIVE_CONFIG_FILE_RE.test(file) && !SECRET_SCAN_IGNORE_FILE_RE.test(file))
     .sort();
@@ -270,12 +314,20 @@ function learningCaptureDiagnosticsCandidate(insights, repositoryEvidence, inter
     interventions,
     assetCoverage: repositoryEvidence?.aiAgentPractice?.coverageRows,
   });
+  const nativePacket = buildNativeLearningReviewPacket({ episodes: taskEpisodes });
   return {
     signals,
     learningCaptureSchemaVersion: learningLoop.schemaVersion,
     episodeRecords: learningLoop.episodeRecords,
     recurringIssueCandidates: learningLoop.candidates,
     coverage: learningLoop.coverage,
+    ...(nativePacket.groups.length > 0 ? {
+      nativeLearningReview: {
+        schemaVersion: 1,
+        status: "review-required",
+        packet: nativePacket,
+      },
+    } : {}),
   };
 }
 
@@ -312,6 +364,67 @@ function safeUsageSummary(value) {
     ?? "unavailable-after-privacy-filtering";
 }
 
+function safeToolName(value) {
+  const label = safeReaderLabel(value, "Unknown tool").slice(0, 64);
+  return /^[\p{L}\p{N}_.: -]+$/u.test(label) ? label : "Unknown tool";
+}
+
+function safeToolDuration(call) {
+  const durationMs = Number(call?.durationMs);
+  const timingSource = call?.timingSource === "transcript-pair" ? "transcript-pair"
+    : call?.timingSource === "lifecycle-pair" ? "lifecycle-pair"
+      : null;
+  if (call?.durationStatus !== "observed"
+    || !Number.isFinite(durationMs)
+    || durationMs < 0
+    || durationMs > 24 * 60 * 60 * 1000
+    || !timingSource) {
+    return { durationStatus: "unobserved" };
+  }
+  return {
+    durationStatus: "observed",
+    durationMs: Math.round(durationMs),
+    timingSource,
+  };
+}
+
+function safeToolCallTrace(value) {
+  const totalCalls = nonNegativeInteger(value?.totalCalls);
+  const sanitizedCalls = rows(value?.calls)
+    .map((call) => ({
+      id: `T${Math.max(1, nonNegativeInteger(call?.step))}`,
+      step: Math.max(1, nonNegativeInteger(call?.step)),
+      toolName: safeToolName(call?.toolName),
+      status: call?.status === "failed" ? "failed" : "observed",
+      ...safeToolDuration(call),
+    }))
+    .filter((call, index, all) => all.findIndex((candidate) => candidate.step === call.step) === index)
+    .sort((left, right) => left.step - right.step);
+  const toolCounts = new Map();
+  const firstSteps = new Map();
+  for (const call of sanitizedCalls) {
+    toolCounts.set(call.toolName, (toolCounts.get(call.toolName) ?? 0) + 1);
+    if (!firstSteps.has(call.toolName)) firstSteps.set(call.toolName, call.step);
+  }
+  const rankedTools = [...toolCounts.keys()].sort((left, right) =>
+    toolCounts.get(right) - toolCounts.get(left)
+      || firstSteps.get(left) - firstSteps.get(right)
+      || left.localeCompare(right));
+  const visibleTools = new Set(rankedTools.slice(0, rankedTools.length > 8 ? 7 : 8));
+  const calls = sanitizedCalls.map((call) => ({
+    ...call,
+    toolName: visibleTools.has(call.toolName) ? call.toolName : "Other tools",
+  }));
+  const observedTotal = Math.max(totalCalls, calls.at(-1)?.step ?? 0);
+  return {
+    schemaVersion: 2,
+    totalCalls: observedTotal,
+    shownCalls: calls.length,
+    truncated: calls.length < observedTotal,
+    calls,
+  };
+}
+
 function projectLongSessionSamples(candidates, scope = {}) {
   return candidates
     .slice()
@@ -331,6 +444,7 @@ function projectLongSessionSamples(candidates, scope = {}) {
       activeMinutes: Number((Number(row?.activeMs ?? 0) / 60_000).toFixed(1)),
       failureCount: nonNegativeInteger(row?.failureCount),
       userInputSummary: safeUsageSummary(row?.userInputSummary),
+      toolTrace: safeToolCallTrace(row?.toolTrace),
     }));
 }
 
@@ -687,6 +801,7 @@ export function buildTaskLoopSourceCandidate({
   priorLearningCaptureEvidenceRef = null,
   includeUsage = false,
   memoryInventory,
+  contextUsage = null,
 } = {}) {
   const readerLocale = normalizeReaderLocale(locale);
   const episodeAnalysis = buildTaskEpisodes(
@@ -759,6 +874,7 @@ export function buildTaskLoopSourceCandidate({
         ? { usageActivity: insights.keySignals.usageEfficiency.activity }
         : {}),
       ...(usageSummary ? { usageEfficiency: usageSummary } : {}),
+      ...(contextUsage ? { contextUsage: JSON.parse(JSON.stringify(contextUsage)) } : {}),
     },
     taskEpisodes,
     deliveryEvidence: focusedCheckEvidence(taskEpisodes),
@@ -813,16 +929,14 @@ export function buildTaskLoopSourceCandidate({
 
 export async function collectAgentLintPracticeEvidence(options = {}) {
   const provider = options.platform ?? "qoder";
-  const assetReviewSupported = ["qoder", "codex", "claude", "cursor", "qwen", "copilot"].includes(provider);
+  const assetReviewSupported = ASSET_PRACTICE_HOST_SET.has(provider);
   const common = {
     workspace: options.workspace,
+    cwd: options.cwd ?? options.workspace,
     provider,
-    qoderHome: options.qoderHome ?? options["qoder-home"],
-    codexHome: options.codexHome ?? options["codex-home"],
-    claudeHome: options.claudeHome ?? options["claude-home"],
-    cursorHome: options.cursorHome ?? options["cursor-home"],
-    qwenHome: options.qwenHome ?? options["qwen-home"],
-    copilotHome: options.copilotHome ?? options["copilot-home"],
+    ...normalizedHostHomeOptions(options, provider),
+    topology: options.topology,
+    analysisScope: options.analysisScope,
   };
   const [instructionReview, assetReview, practiceInventory] = await Promise.all([
     runAgentLint({ ...common, profile: "agents-md-review" }),
@@ -845,6 +959,7 @@ export async function collectAgentLintPracticeEvidence(options = {}) {
     integrityReview,
     locale: normalizeReaderLocale(options.language),
     provider,
+    topology: options.topology,
   });
   if (!assetReviewSupported) {
     const assetReviewProjection = projected.reviews.find((review) => review.profile === "agent-assets-review");
@@ -863,64 +978,27 @@ export async function collectAgentLintPracticeEvidence(options = {}) {
 
 export function collectTaskLoopPracticeInventory(options = {}, platform = options.platform ?? "qoder") {
   if (options.practiceInventory) return Promise.resolve(options.practiceInventory);
+  if (!ASSET_PRACTICE_HOST_SET.has(platform)) return Promise.resolve(null);
   const includeGlobalCapabilities = options.includeGlobalCapabilities === true
     || options["include-global-capabilities"] === true;
-  if (platform === "qoder") {
-    return collectQoderInventory({
-      workspace: options.workspace,
-      includeUserHome: includeGlobalCapabilities,
-      includeGlobalHooks: true,
-      // Project-scoped Memory is part of the normal repository packet. The
-      // explicit global-capability route only widens this inventory to global
-      // Memory/config metadata; it must not disable current-project Memory.
-      includeMemories: true,
-      qoderHome: options.qoderHome ?? options["qoder-home"],
-      sharedCache: options.sharedCache ?? options["shared-cache"],
-    });
-  }
-  if (platform === "codex") {
-    return collectProviderInventory({
-      platform,
-      workspace: options.workspace,
-      includeUserHome: includeGlobalCapabilities,
-      includeGlobalHooks: true,
-      includeMemories: includeGlobalCapabilities,
-      codexHome: options.codexHome ?? options["codex-home"],
-      codexAppPath: options.codexAppPath ?? options["codex-app-path"],
-    });
-  }
-  if (platform === "cursor") {
-    return collectProviderInventory({
-      platform,
-      workspace: options.workspace,
-      includeUserHome: includeGlobalCapabilities,
-      includeGlobalHooks: true,
-      includeMemories: false,
-      cursorHome: options.cursorHome ?? options["cursor-home"],
-    });
-  }
-  if (platform === "claude") {
-    return collectProviderInventory({
-      platform,
-      workspace: options.workspace,
-      includeUserHome: includeGlobalCapabilities,
-      includeGlobalHooks: true,
-      includeMemories: false,
-      claudeHome: options.claudeHome ?? options["claude-home"],
-      claudeStatePath: options.claudeStatePath ?? options["claude-state"],
-    });
-  }
-  if (platform === "qwen") {
-    return collectProviderInventory({
-      platform,
-      workspace: options.workspace,
-      includeUserHome: includeGlobalCapabilities,
-      includeGlobalHooks: true,
-      includeMemories: false,
-      qwenHome: options.qwenHome ?? options["qwen-home"],
-    });
-  }
-  return Promise.resolve(null);
+  const host = getHostDescriptor(platform);
+  const includeMemories = host?.practiceMemory === "project"
+    || (host?.practiceMemory === "global" && includeGlobalCapabilities);
+  const collectInventory = TASK_LOOP_INVENTORY_COLLECTORS.get(platform) ?? collectProviderInventory;
+  return collectInventory({
+    platform,
+    workspace: options.workspace,
+    cwd: options.cwd ?? options.workspace,
+    includeUserHome: includeGlobalCapabilities,
+    includeGlobalHooks: true,
+    includeMemories,
+    ...normalizedHostHomeOptions(options, platform),
+    // Exceptional capability-owned options stay explicit and are ignored by
+    // providers that do not own them.
+    sharedCache: options.sharedCache ?? options["shared-cache"],
+    codexAppPath: options.codexAppPath ?? options["codex-app-path"],
+    claudeStatePath: options.claudeStatePath ?? options["claude-state"],
+  });
 }
 
 function parseArgs(argv) {
@@ -1022,21 +1100,28 @@ export async function createTaskLoopSourceFromSessions(options = {}) {
     ?? options.until
     ?? options.snapshotUntil
     ?? new Date().toISOString();
+  const { cwd: _configuredPracticeCwd, ...sessionOptions } = options;
   const analyzerOptions = {
+    ...sessionOptions,
     platform,
     workspace: options.workspace,
     since: selectionProfile?.scope?.since ?? options.since,
     until: snapshotUntil,
-    qoderHome: options.qoderHome ?? options["qoder-home"],
-    codexHome: options.codexHome ?? options["codex-home"],
-    claudeHome: options.claudeHome ?? options["claude-home"],
-    cursorHome: options.cursorHome ?? options["cursor-home"],
+    ...normalizedHostHomeOptions(options, platform),
     includeGlobalCapabilities: options.includeGlobalCapabilities
       ?? options["include-global-capabilities"]
       ?? false,
+    topology: options.topology,
+    analysisScope: options.analysisScope,
   };
-  const discovery = await analyzer.analyze({ ...analyzerOptions, command: "sources" });
-  const sessionInventory = Object.freeze(discovery.sessions.map((session) => Object.freeze(structuredClone(session))));
+  const population = options.sessionPopulation ?? null;
+  const discovery = population
+    ? sessionPopulationDiscovery(population)
+    : await analyzer.analyze({ ...analyzerOptions, command: "sources" });
+  const inventorySource = population?.sessions ?? discovery.sessions;
+  const sessionInventory = Object.freeze(
+    inventorySource.map((session) => Object.freeze(cloneSessionWithWorkspaceCwds(session))),
+  );
   if (selectionProfile) {
     assertSessionSelectionBinding(selectionProfile, selectionPlan, { eligibleCount: sessionInventory.length });
   }
@@ -1081,7 +1166,13 @@ export async function createTaskLoopSourceFromSessions(options = {}) {
         })).insights,
       )
     : insightResult.insights;
-  const sensitiveConfigFiles = await collectTrackedSensitiveConfigFiles(options.workspace);
+  const sensitiveConfigFiles = await collectTrackedSensitiveConfigFiles(
+    options.workspace,
+    undefined,
+    undefined,
+    options.analysisScope,
+    options.topology,
+  );
   const secretScan = sensitiveConfigFiles.files.length > 0
     ? await scanPaths(sensitiveConfigFiles.files, {
         cwd: options.workspace,
@@ -1092,10 +1183,15 @@ export async function createTaskLoopSourceFromSessions(options = {}) {
     : { findings: [], summary: { totalFindings: 0 } };
   const repositoryEvidence = scanTaskLoopRepositoryEvidence({
     workspace: options.workspace,
+    analysisScope: options.analysisScope,
+    topology: options.topology,
     locale: language,
     insights: insightResult.insights,
     secretScan,
   });
+  if (options.topology) {
+    repositoryEvidence.findingTarget = findingTargetFromTopology(options.topology);
+  }
   const scanReadErrorCount = rows(secretScan?.stats?.errors).length;
   const scanSkippedCount = Number(secretScan?.stats?.skippedFiles ?? 0);
   repositoryEvidence.secretScanCoverage = {
@@ -1164,9 +1260,27 @@ export async function createTaskLoopSourceFromSessions(options = {}) {
     priorLearningCaptureEvidenceRef: priorLearningCaptureState.evidenceRef,
     includeUsage,
     memoryInventory: practiceInventory?.memories ?? { included: false, categories: [] },
+    contextUsage: insightResult.contextUsage ?? null,
   });
   assertStandardUsageComplete(source, selected, includeUsage);
-  return { source, selection: selected };
+  if (!population) return { source, selection: selected };
+  const selectionBinding = bindSessionSelection(population, selected.sessions, {
+    strategy: selected.strategy,
+    projectionPolicy: "lead-report-signal-v1",
+  });
+  const admittedEpisodes = Number(source.sessionEvents?.candidateEpisodeCount ?? 0);
+  const zeroSignalDiscardedEpisodes = Number(source.sessionEvents?.discardedEpisodeCount ?? 0);
+  const sessionBinding = {
+    population: population.binding,
+    selection: selectionBinding,
+    admission: leadAdmissionBinding({
+      projectedEpisodes: admittedEpisodes + zeroSignalDiscardedEpisodes,
+      admittedEpisodes,
+      zeroSignalDiscardedEpisodes,
+      retainedTaskEpisodes: source.taskEpisodes.length,
+    }, selectionBinding),
+  };
+  return { source, selection: selected, sessionBinding };
 }
 
 async function main(argv = process.argv.slice(2)) {

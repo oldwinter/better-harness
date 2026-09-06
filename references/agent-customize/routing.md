@@ -31,12 +31,15 @@ Route by ownership before choosing a vendor-specific feature:
 
 - Agent guides (`AGENTS.md`, `CLAUDE.md`, Copilot, Cursor, Qoder rules) ->
   `agents-md-review.md`.
-- Cursor/Qoder/Codex/Claude/Qwen/Copilot project or user assets ->
+- Cursor/Qoder/Codex/Claude/Qwen/Copilot/Kimi/DSH project or user assets ->
   `global-assets.md`; for Claude-specific configured-asset scope, then load
   `platforms/claude.md`; for Codex-specific operating practice, then load
   `platforms/codex.md`; for Qoder-specific feature taxonomy, then load
   `platforms/qoder.md`; for Copilot-specific operating practice, then load
-  `platforms/copilot.md`. For installed, user-home, settings screenshot, plugin
+  `platforms/copilot.md`; for Kimi-specific configured-asset scope, then load
+  `platforms/kimi.md`; for DSH filesystem Skills and cwd-sensitive
+  Instructions, then load `platforms/dsh.md`. For installed, user-home,
+  settings screenshot, plugin
   cache, or memory scope, run the Global/User Asset Pass.
 - Prior decision, user correction, remembered preference, stale recall,
   cross-window adoption, or memory-safety question -> `memory-review.md` after
@@ -94,8 +97,9 @@ Route by ownership before choosing a vendor-specific feature:
   `skill-discovery.md` only when the loop decision is
   `Create Skill` or `Extend Skill`.
 - Existing Skill evaluation, audit, score explanation, benchmark design, or
-  "what should I fix first" request -> `skill-review.md`; keep static quality,
-  measured task lift, and evidence level separate.
+  "what should I fix first" request -> `skill-eval.md`; load
+  `skill-review.md` for the Gates, scorecard, and evidence ceilings, and keep
+  static quality, measured task lift, and evidence level separate.
 - Short manual shortcut or prompt alias -> Command/Prompt shell; keep canonical
   behavior in a Skill, script, or reference.
 - Host agent hook practice -> `agent-hooks.md`; then load
@@ -156,7 +160,7 @@ Route by ownership before choosing a vendor-specific feature:
 |---|---|---|
 | Missing repo fact, command, or path rule | Add or tune Rule / `AGENTS.md` | `agents-md-review.md` |
 | Stable repeated prompt with repeatable inputs/steps/output | Discover loop owner first; create or extend Skill only when selected | `../loop-engineering/loop-discovery.md`, then `skill-discovery.md` for Skill decisions |
-| Existing Skill quality, routing, safety, or benchmark review | Evaluate the Skill with Gates, weighted quality, and evidence ceilings | `skill-review.md` |
+| Existing Skill quality, routing, safety, or benchmark review | Run the project evaluation protocol, then apply Gates, weighted quality, and evidence ceilings | `skill-eval.md`, then `skill-review.md` |
 | Short manually invoked shortcut | Command / Prompt shell | canonical Skill, script, or reference |
 | Large conditional detail for a Skill | Add Skill reference | `skill-discovery.md` |
 | Visual design source of truth for generated UI | `DESIGN.md` contract or design-review Skill | [DESIGN.md contract](../project-harness/design-md-contract.md) |
@@ -371,3 +375,95 @@ Use the Global/User Asset Pass from `global-assets.md` when the user asks about
 Copilot global assets such as `~/.copilot/skills` or `~/.copilot/hooks`, or
 installed plugins. Keep configured inventory evidence separate from observed
 session behavior.
+
+## Pi Asset Route
+
+For Pi-specific actions, use `platforms/pi.md` as the operating practice
+reference for prompt shape, `AGENTS.md` context files, `.pi` config, skills,
+prompt templates, extensions, and pi packages. Presence is not execution
+proof.
+
+Inspect configured surfaces before projecting readiness evidence:
+
+- `AGENTS.md` (project and ancestors) and the global `~/.pi/agent/AGENTS.md`
+  context file for durable repo context.
+- `.pi/settings.json` and `~/.pi/agent/settings.json` for default model,
+  thinking level, declared pi packages, and skill/prompt overrides.
+- `.pi/skills`, `.agents/skills` (project and `~/.agents/skills`), and
+  `~/.pi/agent/skills` for repeatable workflows.
+- `.pi/prompts` and `~/.pi/agent/prompts` for prompt templates that register
+  as slash commands.
+- Pi packages declared in `settings.json` `packages` entries, resolved under
+  `~/.pi/agent/npm/` and `~/.pi/agent/git/` (or `.pi/npm/` and `.pi/git/` for
+  project installs), plus loose extensions under `~/.pi/agent/extensions/`.
+- Session, diff, test, build, and review evidence for observed execution.
+
+Pi has no native MCP inventory; MCP arrives through extensions such as the
+MCP adapter package, so keep MCP capability claims bound to extension
+evidence. Use the Global/User Asset Pass from `global-assets.md` when the
+user asks about Pi global assets such as `~/.pi/agent/skills`, installed pi
+packages, or extensions. Keep configured inventory evidence separate from
+observed session behavior.
+
+## Kimi Asset Route
+
+For Kimi Code-specific actions, use `platforms/kimi.md` as the operating
+practice reference for configured-asset locations, session evidence, MCP and
+privacy boundaries, and plugin inventory. Presence is not execution proof.
+
+Inspect configured surfaces before projecting readiness evidence:
+
+- `AGENTS.md` (project and ancestors) and `CLAUDE.md` (compatibility) for
+  durable repo context. Plugin-declared `systemPrompt`/`systemPromptPath`
+  content stays plugin metadata and is never merged into rules.
+- `~/.kimi-code/skills/**/SKILL.md` for user-scope workflows and project
+  `.kimi-code/skills/**/SKILL.md` plus `.kimi/skills/**/SKILL.md` for
+  repository-scope workflows. Skills are invoked with `/skill:<name>` or
+  triggered automatically from their descriptions, so the skill surface
+  doubles as the main invocation surface.
+- `~/.kimi-code/mcp.json#mcpServers` for external context. The collector
+  reads `mcp.json` only and never surfaces environment values, header
+  values, URL credentials, or authentication state.
+- Installed plugins indexed in `~/.kimi-code/plugins/installed.json`, each
+  record pointing at a managed copy under `~/.kimi-code/plugins/managed/<id>/`.
+  Assets are inventoried only for `enabled: true` records, from
+  `kimi.plugin.json` (falling back to `.kimi-plugin/plugin.json`), and
+  manifest-declared paths that escape the plugin root are skipped.
+- Session, diff, test, build, and review evidence for observed execution.
+
+Kimi Code has no memory equivalent, and `~/.kimi-code/config.toml` holds
+model/provider settings rather than customizable assets, so it is surfaced
+only as a diagnostics flag. Use the Global/User Asset Pass from
+`global-assets.md` when the user asks about Kimi Code global assets such as
+`~/.kimi-code/skills`, `~/.kimi-code/mcp.json`, or installed plugins; pass
+`--kimi-home <path>` for an isolated configuration root. Keep configured
+inventory evidence separate from observed session behavior.
+## WorkBuddy Asset Route
+
+For WorkBuddy-specific actions, use `platforms/workbuddy.md` as the operating
+practice reference for identity context files, the global `AGENTS.md`,
+skills, marketplace plugins, and MCP config. Presence is not execution proof.
+
+Inspect configured surfaces before projecting readiness evidence:
+
+- `AGENTS.md` (project) and the global `~/.workbuddy/AGENTS.md` plus the
+  `SOUL.md`, `IDENTITY.md`, and `USER.md` identity files for standing
+  context.
+- `~/.workbuddy/settings.json` for `enabledPlugins` state keyed as
+  `<plugin>@<marketplace>`.
+- `~/.workbuddy/skills`, `.agents/skills` (project and `~/.agents/skills`),
+  and project `.workbuddy/skills` for repeatable workflows.
+- Marketplace plugins under
+  `~/.workbuddy/plugins/marketplaces/<marketplace>/plugins/` with
+  `.codebuddy-plugin/plugin.json` manifests.
+- `~/.workbuddy/mcp.json` or `~/.workbuddy/.mcp.json` for user-scope MCP
+  servers, plus either filename at a marketplace plugin root for plugin-scope
+  servers.
+- Session, diff, test, build, and review evidence for observed execution.
+
+Marketplace catalogs list availability, not use; bind plugin capability
+claims to `enabledPlugins` state plus observed session behavior. Use the
+Global/User Asset Pass from `global-assets.md` when the user asks about
+WorkBuddy global assets such as `~/.workbuddy/skills` or installed
+marketplace plugins. Keep configured inventory evidence separate from
+observed session behavior.

@@ -1,7 +1,11 @@
-import { collectAssetBaseline } from "../../coding-agent-practices/asset-baseline.mjs";
+import {
+  collectAssetBaseline,
+  validateAssetBaselineV2,
+} from "../../coding-agent-practices/asset-baseline.mjs";
+import { HOST_CAPABILITIES, hostIdSetFor } from "../../host-support/index.mjs";
 import { availableLane, unavailableLane } from "./contract.mjs";
 
-const ASSET_PROVIDERS = new Set(["qoder", "codex", "claude", "cursor", "qwen", "copilot"]);
+const ASSET_PROVIDERS = hostIdSetFor(HOST_CAPABILITIES.ASSET_PRACTICES);
 
 export async function collectAgentCustomize(context, options = {}, dependencies = {}) {
   if (!ASSET_PROVIDERS.has(context.provider)) {
@@ -11,16 +15,25 @@ export async function collectAgentCustomize(context, options = {}, dependencies 
   const data = await collect({
     provider: context.provider,
     workspace: context.workspace,
+    cwd: context.cwd,
     language: context.language,
+    topology: context.topology,
+    analysisScope: context.analysisScope,
     "include-user-home": context.authority.includeUserHome,
     "include-memories": context.authority.includeMemories,
     ...(options[`${context.provider}-home`] ? { [`${context.provider}-home`]: options[`${context.provider}-home`] } : {}),
     ...(context.provider === "claude" && options["claude-state"] ? { "claude-state": options["claude-state"] } : {}),
   });
-  if (data?.kind !== "agent-asset-baseline") {
-    throw Object.assign(new Error("agent asset evidence returned an invalid contract"), {
-      code: "INVALID_AGENT_CUSTOMIZE_EVIDENCE",
+  try {
+    validateAssetBaselineV2(data, {
+      provider: context.provider,
+      workspace: context.workspace,
+      cwd: context.cwd,
+      includeUserHome: context.authority.includeUserHome,
+      includeMemories: context.authority.includeMemories,
     });
+  } catch {
+    return unavailableLane("agent-customize", { code: "INVALID_AGENT_CUSTOMIZE_EVIDENCE" });
   }
   if (data.status === "failed") {
     return {

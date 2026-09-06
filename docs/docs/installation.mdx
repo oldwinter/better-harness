@@ -14,6 +14,165 @@ each host, except that Qoder CLI can use the version bundled with Qoder
 Desktop. After installing or updating a plugin, start a new session or task so
 the host reloads its plugin inventory.
 
+## Prerequisites {#prerequisites}
+
+To use Better Harness from a host, install one of the supported coding agents
+below and make sure it can open the repository you want to analyze. The host's
+own system requirements and runtime still apply; follow its tab without running
+the repository's development setup unless the tab explicitly uses a source
+checkout.
+
+Node.js and npm are required only when you use the standalone CLI, run Better
+Harness from a source checkout, or contribute to this repository. Those paths
+support Windows, macOS, and Linux and require:
+
+- Node.js `>=22.20.0 <25.0.0`
+- npm `>=10.9.3 <12.0.0`
+
+Check the active runtime before using the standalone or source CLI:
+
+```bash
+node --version
+npm --version
+```
+
+## Inspect and plan lifecycle changes {#lifecycle-cli}
+
+The standalone CLI exposes a read-only view of Better Harness installation
+evidence. It does not contact a registry, modify host configuration, or execute
+the steps in a lifecycle plan:
+
+```bash
+better-harness plugin status --host all
+better-harness doctor --platform all
+better-harness plugin plan install --host qwen --surface cli --scope user
+better-harness plugin verify --host qwen --surface cli
+```
+
+Plans preserve host differences instead of inventing a common mutation path.
+Qoder Desktop is bundled, Codex Desktop returns manual UI steps, Cursor remains
+session-only while its native command contract is reconciled, Pi operations
+without current native evidence are manual or unavailable, and WorkBuddy has no
+managed plugin lifecycle surface. There is no `plugin apply` command.
+
+Git can clone the Cursor manifest for inspection, but manifest presence alone
+does not establish a supported installation route.
+
+## DeepSeek Harness verified discovery (not Quickstart) {#deepseek-harness-dsh}
+
+DeepSeek Harness (DSH) has a bounded **Verified install/discovery** route for
+the qualified DSH `0.1.1-rc.2` contract. This is not a public Quickstart or a
+complete report loop.
+
+Start from a complete Better Harness source checkout or npm package directory.
+Call its absolute directory `<BETTER_HARNESS_ROOT>` below. It must contain
+`skills/better-harness/SKILL.md`, `scripts/better-harness.mjs`, `references/`,
+`models/`, and `templates/`.
+
+### Headless/base
+
+In the active headless profile's `cordis.patch.yml`, configure the existing
+global Skill filesystem row and insert the Better Harness DSH policy:
+
+```yaml
+- id: skill-filesystem
+  config:
+    customSkillDirs:
+      - /absolute/path/to/better-harness/skills
+
+- insert:
+    - id: better-harness-explicit-only
+      name: /absolute/path/to/better-harness/scripts/dsh-skill-discovery/index.mjs
+      config:
+        betterHarnessRoot: /absolute/path/to/better-harness
+```
+
+The profile file is normally
+`$DSH_HOME/profiles/headless/cordis.patch.yml`. Replace every example with the
+same real absolute root before starting a new session.
+
+### Web `standard`, `code`, or `cordis`
+
+The Web host owns Skill discovery inside the selected agent preset. In Web's
+Agent Presets settings, copy `standard`, `code`, or `cordis` to a user preset.
+Edit that copy's active `skill-filesystem` row in
+`$DSH_HOME/.agent-presets/<your-preset>/agent.cordis.yml`:
+
+```yaml
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - /absolute/path/to/better-harness/skills
+```
+
+Then insert the same `better-harness-explicit-only` policy row shown above in
+`$DSH_HOME/profiles/web/cordis.patch.yml`, select the copied user preset, and
+start a new session. Editing only the global Web `skill-filesystem` row is not
+the qualified route. Web `minimal` does not mount the Skill loader and remains
+unsupported.
+
+### Verify the boundary
+
+Enter the gesture directly as the user:
+
+```text
+/better-harness
+```
+
+DSH must inject the canonical Skill before model request derivation. The local
+policy checks DSH's winning source, path, directory resource base, complete-root
+invariant, and required root resources. It rejects a higher-precedence
+project-local same-name Skill and rejects model-facing
+`skill({ name: "better-harness" })` calls.
+
+Use an absolute path on macOS, Linux, and Windows, including when it contains
+spaces or Unicode. DSH resolves relative `customSkillDirs` from its process
+working directory and does not expand a literal `~`. Do not install a standalone
+Skill copy or use a symlink/junction as the canonical route. If the complete
+Better Harness root moves, update both the `customSkillDirs` value and policy
+plugin path/configuration. Repository contributors can repeat the pinned,
+credential-free native proof with `npm run test:dsh-native`.
+
+### Inventory configured assets
+
+The independent developer-preview configured-assets provider reports native
+filesystem Skill winners and cwd-sensitive Instruction sources as
+configured-not-observed evidence:
+
+```bash
+better-harness agent-customize inventory --provider dsh --workspace <path> [--cwd <path>] [--dsh-home <path>] [--include-user-home[=true]]
+```
+
+The default excludes user-home DSH and Agents roots. Add
+`--include-user-home` only when those sources are intentionally in scope.
+Runtime/in-process Skills and active Cordis, Profile, and Preset composition
+remain unresolved, so the inventory does not prove that any asset was used.
+Repository contributors can repeat the pinned, credential-free native
+comparison with `npm run test:dsh-configured-assets-native`. The complete
+configured-assets boundary is documented in the
+[adapter matrix](./hosts/adapter-matrix#deepseek-harness-dsh).
+
+Shared read-only analysis is available through `harness evidence-bundle` and
+`harness analyze`; pass `--workspace <path> --cwd <effective-cwd> --platform dsh`.
+The configured cwd must resolve inside the workspace. DSH still does not provide
+complete runtime configured-asset resolution, output routing, rendering,
+Checkup, lifecycle management, MCP/profile product support, Web `minimal`, a
+public Quickstart, or a full durable report workflow. The
+[adapter matrix](./hosts/adapter-matrix#deepseek-harness-dsh) tracks the exact
+boundary.
+
+:::tip Don't see your Coding Agent?
+
+The six tabs below are the verified Quickstart paths, while the project tracks
+ten fuller host adapters plus bounded DSH capabilities. [Compare all adapter support boundaries](./hosts/adapter-matrix),
+then [follow the new-host contribution workflow and worked pull requests](./hosts/contributing-new-coding-agent)
+if you want to add or complete an integration. You can also
+[browse current repository pull requests](https://github.com/QoderAI/better-harness/pulls)
+before starting overlapping work.
+
+:::
+
 <Tabs groupId="host" queryString>
 <TabItem value="claude-code" label="Claude Code">
 
@@ -31,6 +190,8 @@ Then install Better Harness:
 /plugin install better-harness@better-harness
 ```
 
+### Verify installation
+
 Verify discovery from the shell:
 
 ```bash
@@ -38,10 +199,10 @@ claude plugin details better-harness@better-harness
 ```
 
 The details should include `Skills (1) better-harness`. Then start a new
-Claude session in the repository you want to review and run the report prompt:
+Claude session in the repository you want to analyze and run the report prompt:
 
 ```text
-/better-harness review this project's AI coding workflow and generate a report
+/better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
 Claude Code defaults to a self-contained `report.html` with paired `report.md`
@@ -73,9 +234,7 @@ Use `https://github.com/QoderAI/better-harness.git` with Git ref `main`.
 Add the repository source:
 
 ```bash
-codex plugin marketplace add \
-  'https://github.com/QoderAI/better-harness.git' \
-  --ref main
+codex plugin marketplace add "https://github.com/QoderAI/better-harness.git" --ref main
 ```
 
 Then inspect and install Better Harness:
@@ -85,11 +244,26 @@ codex plugin list --marketplace better-harness
 codex plugin add better-harness@better-harness
 ```
 
-Start a new Codex task in the repository you want to review and run the report
-prompt:
+### Verify installation
+
+For Codex Desktop, confirm that **Better Harness** appears installed under
+**Settings &gt; Plugins**. Then start a new task in the repository you want to
+analyze and run:
 
 ```text
-/better-harness review this project's AI coding workflow and generate a report
+@better-harness analyze this project's AI coding workflow and generate an evidence-backed report
+```
+
+For Codex CLI, confirm that the configured marketplace exposes the plugin:
+
+```bash
+codex plugin list --marketplace better-harness
+```
+
+Then start a new Codex task in the repository you want to analyze and run:
+
+```text
+$better-harness:better-harness analyze this project's AI coding workflow and generate an evidence-backed report
 ```
 
 Use the repository URL with `marketplace add`, not a raw `marketplace.json`
@@ -105,11 +279,11 @@ Better Harness is built into the [Qoder](https://qoder.com/) desktop app, so
 no Marketplace or local plugin installation is required there. Choose either
 entry point:
 
-1. **From a session:** Open the repository you want to review, start a new
+1. **From a session:** Open the repository you want to analyze, start a new
    session, and run the report prompt:
 
    ```text
-   /better-harness review this project's AI coding workflow and generate a report
+   /better-harness analyze this project's AI coding workflow and generate an evidence-backed report
    ```
 
 2. **From Quest (Qoder 1.18.0+):** Open Quest, then select
@@ -120,37 +294,128 @@ entry point:
 If Qoder Desktop is installed, Better Harness is already available in Qoder
 CLI. No marketplace or plugin installation is required.
 
-Only when using Qoder CLI without Qoder Desktop, add this repository as a
-marketplace and install Better Harness manually:
+Only when using Qoder CLI without Qoder Desktop, inspect the current manual
+installation disposition before following Qoder's native marketplace flow:
 
 ```bash
-qodercli plugin marketplace add \
-  'https://github.com/QoderAI/better-harness.git'
-qodercli plugin install better-harness@better-harness
+better-harness plugin plan install --host qoder --surface cli --scope user
 ```
 
-Verify the manual installation with `qodercli plugin list`, then start a new
-Qoder CLI session before using `/better-harness`.
+The planner does not emit the older install syntax because the current native
+help and this repository's historical documentation disagree.
+
+### Verify installation
+
+For Qoder Desktop, start a new session and run the report prompt shown above.
+On Qoder 1.18.0 or newer, seeing **Better Harness (Beta)** in the Quest sidebar
+also confirms the built-in entry point is available.
+
+For a manual Qoder CLI installation, verify discovery with:
+
+```bash
+qodercli plugin list
+better-harness plugin verify --host qoder --surface cli
+```
+
+Then start a new Qoder CLI session before using `/better-harness`.
 
 </TabItem>
 <TabItem value="cursor" label="Cursor">
 
 ## Cursor {#cursor}
 
-The Cursor plugin is not published to the marketplace yet. Load the
-source-local plugin for one Cursor Agent session:
+The Cursor plugin is not published to the marketplace. The repository carries
+the source-local manifest, but the current local Cursor help does not verify the
+historical `--plugin-dir` contract. Better Harness therefore reports the
+installation plan as unavailable instead of emitting that command:
 
 ```bash
 git clone https://github.com/QoderAI/better-harness.git
-cursor-agent --plugin-dir /path/to/better-harness
+better-harness plugin plan install --host cursor --surface agent --scope session
 ```
+
+### Verify installation
+
+Do not claim that a Cursor Agent session loaded Better Harness while the native
+installation contract remains unavailable. Inspect the bounded local evidence:
+
+```bash
+better-harness plugin verify --host cursor --surface agent
+```
+
+Only if a future or independently verified native route loads the plugin, keep
+that same Cursor Agent session open and run:
+
+```text
+/better-harness analyze this project's AI coding workflow and generate an evidence-backed report
+```
+
+The verification result remains partial when runtime activation cannot be
+observed.
 
 Cursor session evidence is supported through workspace-matched transcripts,
 metadata, and audit logs. Partial or unavailable coverage remains explicit.
+
+</TabItem>
+<TabItem value="qwen-code" label="Qwen Code">
+
+## Qwen Code {#qwen-code}
+
+Install Better Harness as a Qwen Code extension:
+
+```bash
+qwen extensions install QoderAI/better-harness
+```
+
+### Verify installation
+
+Run `qwen extensions list` and confirm that it includes Better Harness. Then
+start a new Qwen Code session in the repository you want to analyze and run the
+report prompt:
+
+```text
+/better-harness analyze this project's AI coding workflow and generate an evidence-backed report
+```
+
+Qwen Code produces a self-contained `report.html` with paired `report.md` and
+`findings.json`. Session evidence coverage depends on Qwen Code's available
+transcript paths; missing or partial evidence remains explicit.
+
+</TabItem>
+<TabItem value="github-copilot" label="GitHub Copilot">
+
+## GitHub Copilot {#github-copilot}
+
+Register this repository as a Copilot plugin marketplace, then install Better
+Harness:
+
+```bash
+copilot plugin marketplace add QoderAI/better-harness
+copilot plugin install better-harness@better-harness
+```
+
+### Verify installation
+
+Confirm that the plugin is installed and that its Skill is available:
+
+```bash
+copilot plugin list
+copilot skill list
+```
+
+The output should include `better-harness`. Start a new Copilot CLI session so
+it reloads the installed Skill. Prefer the marketplace path above because it
+keeps discovery and updates tied to one registered source.
+
+Copilot session evidence is supported through workspace-matched Copilot CLI
+transcripts under `~/.copilot/session-state/`. Copilot records no per-response
+token usage, and VS Code Copilot Chat has no supported durable transcript; both
+remain explicit evidence boundaries.
 
 </TabItem>
 </Tabs>
 
 ## Next step
 
-Generate [your first report](./your-first-report.md).
+Generate [your first report](./your-first-report.md). If installation or
+discovery fails, use the bounded checks in [Troubleshooting](./troubleshooting.md).

@@ -7,7 +7,12 @@ const sidebars = {
       type: "category",
       label: "Getting Started",
       collapsed: false,
-      items: ["introduction", "installation", "your-first-report"],
+      items: [
+        "introduction",
+        "installation",
+        "your-first-report",
+        "troubleshooting",
+      ],
     },
     {
       type: "category",
@@ -16,6 +21,7 @@ const sidebars = {
       items: [
         "concepts/agent-work-loop",
         "concepts/findings-and-evidence",
+        "concepts/harness-inspector",
         "concepts/glossary",
       ],
     },

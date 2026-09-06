@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SessionAnalyzer } from "../../session-analysis.mjs";
+import { SessionAnalyzer } from "../analyzer.mjs";
 import { parseArgs, parseBooleanFlag } from "../cli.mjs";
-import { forEachJsonLine, pathExists, walkFiles } from "../fs.mjs";
+import { forEachJsonLine, pathExists, readJson, walkFiles } from "../fs.mjs";
 import { mapToSortedObject, stableId } from "../ids.mjs";
 import { expandHome, normalizeWorkspace } from "../paths.mjs";
 import {
@@ -31,6 +31,17 @@ import {
   factsHydrationLimit,
   prepareFactsSessionInventory,
 } from "../session-core-facts.mjs";
+import {
+  bindSessionWorkspaceCwds,
+  hydrateWorkspaceSelection,
+  markSessionReadCoverage,
+  qualifyWorkspaceSessionInventory,
+  sessionWorkspaceCwd,
+  withWorkspaceMatchDiagnostics,
+  workspaceQualifiedSelectionEntries,
+  workspaceMatchScopeFromOptions,
+} from "../provider-runner.mjs";
+import { WORKSPACE_CWD_MATCH, classifyWorkspaceCwd } from "../workspace-match.mjs";
 
 const DEFAULT_PLATFORM = "qoder";
 const DEFAULT_LIMIT = 50;
@@ -47,10 +58,6 @@ const SOURCE_ROLES = Object.freeze({
   "cache-project-session": "cache-conversation",
   "global-project-jsonl": "user-global-project-session-store",
 });
-
-async function readJson(filePath) {
-  return JSON.parse(await readFile(filePath, "utf8"));
-}
 
 export function workspaceToQoderSlug(workspace) {
   return workspaceToQoderSlugVariants(workspace)[0];
@@ -72,6 +79,12 @@ function sourceRootPaths(root) {
   return root.paths ?? [root.path];
 }
 
+function transcriptWorkspaceForRoot(scope, sourceRoot) {
+  const slug = path.basename(sourceRoot);
+  return scope._workspaceTranscriptIdentities
+    ?.find((identity) => identity.slugs.includes(slug))?.workspace ?? scope.workspace;
+}
+
 function parseSegmentTimestamp(filePath) {
   const base = path.basename(filePath, path.extname(filePath));
   const match = base.match(
@@ -91,6 +104,11 @@ function isWorkspaceMatch(candidate, workspace) {
   }
   const resolved = normalizeWorkspace(candidate);
   return resolved === workspace || resolved.startsWith(`${workspace}${path.sep}`);
+}
+
+function isScopedWorkspaceMatch(candidate, scope) {
+  if (!scope?._workspaceMatchScope) return isWorkspaceMatch(candidate, scope.workspace);
+  return classifyWorkspaceCwd(candidate, scope._workspaceMatchScope) !== WORKSPACE_CWD_MATCH.UNMATCHED;
 }
 
 function inferSessionId(raw, sourceRef) {
@@ -182,6 +200,87 @@ function inferSkillName(raw) {
 function messageContentItems(raw) {
   const content = raw?.message?.content ?? raw?.data?.message?.content ?? null;
   return Array.isArray(content) ? content : [];
+}
+
+function embeddedToolLifecycleItems(raw) {
+  return messageContentItems(raw).flatMap((item, index) => {
+    if (item?.type === "tool_use" && item?.id) {
+      return [{
+        index,
+        phase: "request",
+        invocationId: String(item.id),
+        toolName: item?.name ? String(item.name) : null,
+        input: item?.input && typeof item.input === "object" ? item.input : null,
+        result: null,
+      }];
+    }
+    const resultId = item?.type === "tool_result"
+      ? item?.tool_use_id ?? item?.toolUseId ?? item?.id ?? null
+      : null;
+    if (!resultId) return [];
+    return [{
+      index,
+      phase: "result",
+      invocationId: String(resultId),
+      toolName: null,
+      input: null,
+      result: item,
+    }];
+  });
+}
+
+function embeddedToolFilePath(input) {
+  return input?.file_path ?? input?.filePath ?? input?.path ?? null;
+}
+
+function embeddedToolCommandText(input) {
+  return input?.command ?? input?.cmd ?? null;
+}
+
+function withoutEmbeddedToolFacts(event) {
+  const output = { ...event };
+  for (const field of ["toolName", "toolInvocationId", "lifecyclePhase", "filePath", "commandText"]) {
+    delete output[field];
+  }
+  return output;
+}
+
+function embeddedToolLifecycleEvent(event, item, options = {}) {
+  const output = {
+    sessionId: event.sessionId,
+    type: item.phase === "request" ? "tool.requested" : "tool.execution.finished",
+    category: "tool",
+    timestamp: event.timestamp,
+    sourceKind: event.sourceKind,
+    planningScope: event.planningScope,
+    evidenceRef: event.evidenceRef,
+    summary: item.phase === "request" ? "Tool request observed" : "Tool result observed",
+    lifecyclePhase: item.phase,
+    toolInvocationId: item.invocationId,
+    embeddedItemIndex: item.index,
+  };
+  if (event.cwd) output.cwd = event.cwd;
+  if (item.toolName) output.toolName = item.toolName;
+  const filePath = embeddedToolFilePath(item.input);
+  if (filePath) output.filePath = filePath;
+  if (options.includeCommandText) {
+    const commandText = embeddedToolCommandText(item.input);
+    if (commandText) output.commandText = commandText;
+  }
+  if (item.phase === "result") {
+    if (item.result?.is_error === true || item.result?.isError === true) {
+      output.success = false;
+      output.hasError = true;
+    } else if (item.result?.is_error === false || item.result?.isError === false) {
+      output.success = true;
+    } else if (typeof event.success === "boolean") {
+      output.success = event.success;
+    }
+    if (event.hasError === true) output.hasError = true;
+    if (event.resultFacts) output.resultFacts = event.resultFacts;
+    if (event.level) output.level = event.level;
+  }
+  return output;
 }
 
 function inferSkillInvocations(raw, type) {
@@ -309,6 +408,106 @@ function inferModelUsage(raw) {
     usage[target] = Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
   }
   return observed ? usage : null;
+}
+
+function inferContextUsageRatio(raw) {
+  const value = Number(raw?.message?.usage?.context_usage_ratio ?? raw?.data?.message?.usage?.context_usage_ratio);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
+function inferContextWindowTokens(raw) {
+  const value = Number(raw?.contextWindow ?? raw?.data?.contextWindow);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function enrichQoderContextUsage(events) {
+  const observedWindows = [...new Set(events.map((event) => event.observedContextWindowTokens)
+    .filter((value) => Number.isFinite(value) && value > 0))];
+  const sessionWindow = observedWindows.length === 1 ? observedWindows[0] : null;
+  let currentWindow = sessionWindow;
+  const enriched = events.map((event) => {
+    if (Number.isFinite(event.observedContextWindowTokens) && event.observedContextWindowTokens > 0) {
+      currentWindow = event.observedContextWindowTokens;
+    }
+    const context = event.currentContextUsage;
+    if (!context || !Number.isFinite(context.percentFull)) return event;
+    const windowTokens = Number.isFinite(context.windowTokens) && context.windowTokens > 0
+      ? context.windowTokens
+      : currentWindow;
+    return {
+      ...event,
+      currentContextUsage: {
+        ...context,
+        ...(Number.isFinite(windowTokens) && windowTokens > 0 ? {
+          usedTokens: Math.round((context.percentFull / 100) * windowTokens),
+          windowTokens: Math.round(windowTokens),
+        } : {}),
+      },
+    };
+  });
+  return mergeQoderAssistantContextIntoResponses(enriched);
+}
+
+const QODER_CONTEXT_MERGE_MAX_GAP_MS = 1_000;
+
+function sameObservedValue(left, right) {
+  return !left || !right || left === right;
+}
+
+/**
+ * Qoder retains one inference in parallel logs-session and project-jsonl
+ * lanes. The logs lane owns the canonical `model.response.completed` event;
+ * the project lane may add the context ratio a few milliseconds later. Merge
+ * that evidence one-to-one instead of presenting both lanes as model calls.
+ *
+ * Unmatched assistant context is intentionally preserved on its original
+ * event: it can still describe Session-current occupancy, but the shared usage
+ * progression accepts canonical model responses only.
+ */
+export function mergeQoderAssistantContextIntoResponses(events, {
+  maxGapMs = QODER_CONTEXT_MERGE_MAX_GAP_MS,
+} = {}) {
+  const merged = events.map((event) => event);
+  const availableResponses = new Set(events
+    .map((event, index) => event?.type === "model.response.completed" ? index : null)
+    .filter((index) => index !== null));
+
+  for (const assistant of events) {
+    if (assistant?.type !== "assistant" || !assistant.currentContextUsage) continue;
+    const assistantTime = timestampMillis(assistant.timestamp);
+    if (assistantTime === null) continue;
+    let matchIndex = null;
+    let matchGap = Number.POSITIVE_INFINITY;
+    for (const index of availableResponses) {
+      const response = merged[index];
+      if (!sameObservedValue(response?.sessionId, assistant.sessionId)
+        || !sameObservedValue(response?.model, assistant.model)
+        || !sameObservedValue(response?.stopReason, assistant.stopReason)) continue;
+      const responseTime = timestampMillis(response.timestamp);
+      if (responseTime === null) continue;
+      const gap = assistantTime - responseTime;
+      if (gap < 0 || gap > maxGapMs || gap >= matchGap) continue;
+      matchIndex = index;
+      matchGap = gap;
+    }
+    if (matchIndex === null) continue;
+    const response = merged[matchIndex];
+    merged[matchIndex] = {
+      ...response,
+      currentContextUsage: {
+        ...assistant.currentContextUsage,
+        ...(response.currentContextUsage ?? {}),
+      },
+    };
+    availableResponses.delete(matchIndex);
+  }
+  return merged.map((event) => {
+    const carriesUsageEvidence = event?.modelUsage || event?.modelInvocationUsage
+      || event?.currentContextUsage || Number.isFinite(event?.processedTokens);
+    return event?.type !== "model.response.completed" && carriesUsageEvidence
+      ? { ...event, usageProgressionExcluded: true }
+      : event;
+  });
 }
 
 function inferCwd(raw) {
@@ -480,31 +679,40 @@ function summarizeHookCommand(command, depth = 0) {
   return target ? `${base} ${target}` : base;
 }
 
-function messageText(raw) {
-  const message = raw?.message ?? raw?.content ?? raw?.data?.message ?? raw?.data?.content ?? null;
-  if (typeof message === "string") {
-    return message;
+function structuredMessageItemText(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return "";
+  if (item.type === "thinking" && typeof item.thinking === "string") return item.thinking;
+  if (["text", "output_text"].includes(item.type)) {
+    return typeof item.text === "string" ? item.text
+      : typeof item.content === "string" ? item.content
+        : "";
   }
-  if (Array.isArray(message)) {
-    return message
-      .map((item) => {
-        if (typeof item === "string") {
-          return item;
-        }
-        return item?.text ?? item?.content ?? "";
-      })
-      .join("\n");
-  }
-  if (message && typeof message === "object") {
-    if (typeof message.content === "string") {
-      return message.content;
-    }
-    if (typeof message.text === "string") {
-      return message.text;
-    }
-    return JSON.stringify(message);
+  if (!item.type) {
+    return typeof item.text === "string" ? item.text
+      : typeof item.content === "string" ? item.content
+        : "";
   }
   return "";
+}
+
+function structuredMessageText(message) {
+  if (typeof message === "string") return message;
+  if (Array.isArray(message)) {
+    return message.map(structuredMessageItemText).filter(Boolean).join("\n");
+  }
+  if (!message || typeof message !== "object") return "";
+  if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content)) {
+    return message.content.map(structuredMessageItemText).filter(Boolean).join("\n");
+  }
+  if (typeof message.text === "string") return message.text;
+  return "";
+}
+
+function messageText(raw) {
+  const message = raw?.message ?? raw?.content ?? raw?.data?.message ?? raw?.data?.content ?? null;
+  return structuredMessageText(message);
 }
 
 function toolOutputText(raw) {
@@ -611,16 +819,18 @@ function toPublicSource(root) {
 async function readSessionIdFromJsonl(filePath, fallbackRef) {
   let found = null;
   let firstTimestamp = null;
+  let cwd = null;
   await forEachJsonLine(
     filePath,
     (raw) => {
       found = inferSessionId(raw, fallbackRef);
       firstTimestamp = inferTimestamp(raw, fallbackRef);
+      cwd = inferCwd(raw) ?? cwd;
       return found ? false : undefined;
     },
     { maxLines: 25 },
   );
-  return { sessionId: found, timestamp: firstTimestamp };
+  return { sessionId: found, timestamp: firstTimestamp, cwd };
 }
 
 async function readHomeSessionProbe(filePath, fallbackRef, scope) {
@@ -628,7 +838,7 @@ async function readHomeSessionProbe(filePath, fallbackRef, scope) {
   const observe = (raw) => {
     probe.sessionId = probe.sessionId ?? inferSessionId(raw, fallbackRef);
     probe.timestamp = probe.timestamp ?? inferTimestamp(raw, fallbackRef);
-    if (isWorkspaceMatch(inferCwd(raw), scope.workspace)) {
+    if (isScopedWorkspaceMatch(inferCwd(raw), scope)) {
       probe.workspaceMatched = true;
     }
     return probe.sessionId && probe.timestamp && probe.workspaceMatched ? false : undefined;
@@ -655,6 +865,7 @@ function createSessionRecord(sessionId, workspace) {
     firstSeen: null,
     lastSeen: null,
     indexedEventCounts: new Map(),
+    workspaceCwdCandidates: new Map(),
   };
 }
 
@@ -683,6 +894,13 @@ function addSessionRef(sessions, sessionId, workspace, ref) {
   }
 
   session.sourceKinds.add(ref.kind);
+  if (typeof ref.cwd === "string" && ref.cwd.length > 0) {
+    const priority = Number(ref.cwdPriority ?? 0);
+    session.workspaceCwdCandidates.set(
+      ref.cwd,
+      Math.max(priority, session.workspaceCwdCandidates.get(ref.cwd) ?? Number.NEGATIVE_INFINITY),
+    );
+  }
   addIndexedCount(session, ref.eventType);
   mergeTimeRange(session, ref.timestamp);
 
@@ -749,7 +967,7 @@ function finalizeSession(session) {
       lastSeen: ref.lastSeen,
     }));
 
-  return {
+  const finalized = {
     sessionId: session.sessionId,
     workspace: session.workspace,
     sourceKinds,
@@ -759,6 +977,16 @@ function finalizeSession(session) {
     indexedEventCounts: mapToSortedObject(session.indexedEventCounts),
     sourceRefs,
   };
+  const priorities = [...session.workspaceCwdCandidates.values()];
+  const strongest = priorities.length > 0 ? Math.max(...priorities) : null;
+  return bindSessionWorkspaceCwds(
+    finalized,
+    strongest === null
+      ? []
+      : [...session.workspaceCwdCandidates]
+        .filter(([_cwd, priority]) => priority === strongest)
+        .map(([cwd]) => cwd),
+  );
 }
 
 function filterSessionsByScope(sessions, scope) {
@@ -878,10 +1106,22 @@ function disabledRootWarnings(roots) {
 export class QoderSessionAnalyzer extends SessionAnalyzer {
   async resolveScope(options = {}) {
     const workspace = normalizeWorkspace(options.workspace);
+    const workspaceMatchScope = workspaceMatchScopeFromOptions(options);
     const since = normalizeCliDate(options.since, false);
     const until = normalizeCliDate(options.until, true);
     const home = path.resolve(expandHome(options.home ?? options["qoder-home"] ?? "~/.qoder"));
-    const workspaceSlugVariants = workspaceToQoderSlugVariants(workspace);
+    const transcriptWorkspaces = [...new Set([
+      workspace,
+      workspaceMatchScope?.requestedWorkspace,
+      workspaceMatchScope?.target.kind === "workspace-member" ? workspaceMatchScope.gitRoot : null,
+    ].filter(Boolean))];
+    const workspaceTranscriptIdentities = transcriptWorkspaces.map((identityWorkspace) => ({
+      workspace: identityWorkspace,
+      slugs: workspaceToQoderSlugVariants(identityWorkspace),
+    }));
+    const workspaceSlugVariants = [...new Set(
+      workspaceTranscriptIdentities.flatMap((identity) => identity.slugs),
+    )];
 
     return {
       platform: "qoder",
@@ -898,6 +1138,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
       includeGlobalCapabilities: parseBooleanFlag(
         options["include-global-capabilities"] ?? options.includeGlobalCapabilities ?? false,
       ),
+      _workspaceMatchScope: workspaceMatchScope,
+      _workspaceTranscriptIdentities: workspaceTranscriptIdentities,
     };
   }
 
@@ -1012,7 +1254,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
 
     await forEachJsonLine(root.path, (raw, line) => {
       const sessionId = inferSessionId(raw);
-      if (!sessionId || !isWorkspaceMatch(inferCwd(raw), scope.workspace)) {
+      const cwd = inferCwd(raw);
+      if (!sessionId || !isScopedWorkspaceMatch(cwd, scope)) {
         return;
       }
       const timestamp = inferTimestamp(raw);
@@ -1025,6 +1268,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         line,
         eventType: inferEventType(raw, "audit"),
         timestamp,
+        cwd,
+        cwdPriority: 1,
       });
     });
   }
@@ -1036,6 +1281,7 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     }
 
     for (const sourceRoot of sourceRootPaths(root)) {
+      const identityCwd = transcriptWorkspaceForRoot(scope, sourceRoot);
       const files = await walkFiles(sourceRoot, {
         maxDepth: 3,
         limit: 20_000,
@@ -1056,6 +1302,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
           path: filePath,
           eventType: "segment",
           timestamp,
+          cwd: identityCwd,
+          cwdPriority: 3,
         });
       }
     }
@@ -1065,10 +1313,12 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     const root = roots.find((item) => item.id === "qoder-projects");
     if (root?.exists && root.enabled) {
       for (const sourceRoot of sourceRootPaths(root)) {
+        const identityCwd = transcriptWorkspaceForRoot(scope, sourceRoot);
         await this.discoverProjectRootSessions(scope, sessions, sourceRoot, {
           kind: "project-jsonl",
           transcriptKind: "execution-transcript",
           planningScope: "workspace",
+          identityCwd,
         });
       }
     }
@@ -1094,11 +1344,17 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         kind: "global-project-jsonl",
         transcriptKind: "global-project-jsonl",
         planningScope: "user-global",
+        identityCwd: null,
       });
     }
   }
 
-  async discoverProjectRootSessions(scope, sessions, projectRoot, { kind, transcriptKind, planningScope }) {
+  async discoverProjectRootSessions(scope, sessions, projectRoot, {
+    kind,
+    transcriptKind,
+    planningScope,
+    identityCwd,
+  }) {
     let entries;
     try {
       entries = await readdir(projectRoot, { withFileTypes: true });
@@ -1121,6 +1377,7 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
           eventType: "conversation-jsonl",
           timestamp,
           planningScope,
+          ...(identityCwd ? { cwd: identityCwd, cwdPriority: 3 } : {}),
         });
       }
 
@@ -1141,6 +1398,7 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
           eventType: "session.state",
           timestamp,
           planningScope,
+          ...(identityCwd ? { cwd: identityCwd, cwdPriority: 3 } : {}),
         });
       }
     }
@@ -1168,6 +1426,7 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         eventType: "execution-transcript",
         timestamp,
         planningScope,
+        ...(identityCwd ? { cwd: identityCwd, cwdPriority: 3 } : {}),
       });
     }
   }
@@ -1288,6 +1547,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     const stopReason = inferStopReason(raw);
     const isSubagent = inferIsSubagent(raw);
     const modelUsage = inferModelUsage(raw);
+    const contextUsageRatio = inferContextUsageRatio(raw);
+    const contextWindowTokens = inferContextWindowTokens(raw);
     const cwd = inferCwd(raw);
     const phase = lifecyclePhase(type);
     const auditLifecycle = isAuditLifecycle(sourceRef.kind);
@@ -1353,7 +1614,26 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     }
     if (modelUsage) {
       event.modelUsage = modelUsage;
+      event.modelInvocationUsage = modelUsage;
       event.usageFieldsObserved = true;
+      event.usageBasis = "model-inference";
+      event.usageSource = "qoder-project-transcript";
+    }
+    if (contextUsageRatio !== null) {
+      event.currentContextUsage = {
+        // Keep enough provider precision to derive an absolute token count when
+        // a real session window is also retained. Presentation layers round it.
+        percentFull: contextUsageRatio * 100,
+        basis: "host-context-ratio",
+        source: "qoder-project-context-ratio",
+        rawTextOmitted: true,
+      };
+    }
+    if (contextWindowTokens !== null) {
+      event.observedContextWindowTokens = contextWindowTokens;
+    }
+    if (raw?.compactMetadata && typeof raw.compactMetadata === "object") {
+      event.compactionBoundary = true;
     }
     if (cwd) {
       event.cwd = cwd;
@@ -1442,37 +1722,77 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     return event;
   }
 
+  normalizeEvents(raw, sourceRef, options = {}) {
+    const event = this.normalizeEvent(raw, sourceRef, options);
+    if (!event) return [];
+    const lifecycleItems = embeddedToolLifecycleItems(raw);
+    if (lifecycleItems.length === 0) return [event];
+    return [
+      withoutEmbeddedToolFacts(event),
+      ...lifecycleItems.map((item) => embeddedToolLifecycleEvent(event, item, options)),
+    ];
+  }
+
   async readSession(session, scope, options = {}) {
     const events = [];
     const includeContent = parseBooleanFlag(options["include-content"] ?? options.includeContent ?? false);
     const includeCommandText = parseBooleanFlag(options["include-command-text"] ?? options.includeCommandText ?? false);
     const includeUserText = parseBooleanFlag(options["include-user-text"] ?? options.includeUserText ?? false);
-    const refs = session.sourceRefs ?? [];
-    const workspaceLinked = refs.some(
+    const requestedMaxLines = Number(options.workspacePreflightMaxLines);
+    const preflight = Number.isFinite(requestedMaxLines) && requestedMaxLines > 0;
+    let remainingLines = preflight ? Math.trunc(requestedMaxLines) : null;
+    let truncated = false;
+    const sessionRefs = session.sourceRefs ?? [];
+    const workspaceLinked = sessionRefs.some(
       (ref) => ref.kind !== "home-session" && ref.planningScope !== "user-global",
     );
+    const refs = preflight
+      ? sessionRefs.filter((ref) => ref.kind !== "audit-jsonl" && ref.kind !== "project-state")
+      : sessionRefs;
+    const identityCwd = scope._workspaceMatchScope
+      ? sessionWorkspaceCwd(session, scope._workspaceMatchScope)
+      : scope.workspace;
+    const rootCandidate = scope._workspaceMatchScope
+      && classifyWorkspaceCwd(identityCwd, scope._workspaceMatchScope) === WORKSPACE_CWD_MATCH.ROOT_CANDIDATE;
+    const readOptions = { includeContent, includeCommandText, includeUserText, rootCandidate };
 
     for (const ref of refs) {
+      if (remainingLines !== null && remainingLines <= 0) {
+        truncated = true;
+        break;
+      }
+      let readCoverage = null;
       if (ref.kind === "audit-jsonl") {
-        await this.readAuditEvents(session.sessionId, scope, ref, events, { includeContent, includeCommandText, includeUserText });
-      } else if (ref.kind === "project-state") {
-        await this.readStateEvent(session.sessionId, ref, events, { includeContent, includeCommandText, includeUserText });
-      } else if (ref.path.endsWith(JSONL_EXT)) {
-        await this.readJsonlEvents(
+        readCoverage = await this.readAuditEvents(
           session.sessionId,
           scope,
           ref,
           events,
-          { includeContent, includeCommandText, includeUserText },
+          { ...readOptions, maxLines: remainingLines },
+        );
+      } else if (ref.kind === "project-state") {
+        if (!await this.readStateEvent(session.sessionId, ref, events, readOptions)) truncated = true;
+      } else if (ref.path.endsWith(JSONL_EXT)) {
+        readCoverage = await this.readJsonlEvents(
+          session.sessionId,
+          scope,
+          ref,
+          events,
+          { ...readOptions, maxLines: remainingLines },
           { workspaceLinked },
         );
       }
+      if (readCoverage?.invalidLines > 0) truncated = true;
+      if (remainingLines !== null && readCoverage) {
+        if (readCoverage.lineCount > remainingLines) truncated = true;
+        remainingLines -= Math.min(readCoverage.lineCount, remainingLines);
+      }
     }
 
-    return events
+    const sorted = events
       .map((event) => event.cwd || event.planningScope === "user-global"
         ? event
-        : { ...event, cwd: scope.workspace })
+        : { ...event, cwd: identityCwd ?? scope.workspace })
       .filter((event) => withinTimeRange(event.timestamp, scope))
       .sort((a, b) => {
         const left = timestampMillis(a.timestamp) ?? 0;
@@ -1482,10 +1802,11 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         }
         return (a.evidenceRef.line ?? a.evidenceRef.seq ?? 0) - (b.evidenceRef.line ?? b.evidenceRef.seq ?? 0);
       });
+    return markSessionReadCoverage(enrichQoderContextUsage(sorted), { truncated });
   }
 
   async readJsonlEvents(sessionId, scope, ref, events, options, { workspaceLinked = false } = {}) {
-    await forEachJsonLine(ref.path, (raw, line) => {
+    return forEachJsonLine(ref.path, (raw, line) => {
       const sourceRef = { ...ref, line, sessionId };
       const rawSessionId = inferSessionId(raw, sourceRef);
       if (rawSessionId && rawSessionId !== sessionId && ref.kind !== "logs-session") {
@@ -1498,29 +1819,30 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
           }
         } else {
           const recordCwd = inferCwd(raw);
-          if (recordCwd ? !isWorkspaceMatch(recordCwd, scope.workspace) : !workspaceLinked) {
+          if (recordCwd ? !isScopedWorkspaceMatch(recordCwd, scope) : !workspaceLinked) {
             return;
           }
         }
       }
-      events.push(this.normalizeEvent(raw, sourceRef, options));
-    });
+      events.push(...this.normalizeEvents(raw, sourceRef, options));
+    }, options.maxLines === null ? {} : { maxLines: options.maxLines });
   }
 
   async readAuditEvents(sessionId, scope, ref, events, options) {
-    await forEachJsonLine(ref.path, (raw, line) => {
-      if (inferSessionId(raw) !== sessionId || !isWorkspaceMatch(inferCwd(raw), scope.workspace)) {
+    return forEachJsonLine(ref.path, (raw, line) => {
+      if (inferSessionId(raw) !== sessionId
+        || (!options.rootCandidate && !isScopedWorkspaceMatch(inferCwd(raw), scope))) {
         return;
       }
       const sourceRef = { ...ref, line, sessionId };
-      events.push(this.normalizeEvent(raw, sourceRef, options));
-    });
+      events.push(...this.normalizeEvents(raw, sourceRef, options));
+    }, options.maxLines === null ? {} : { maxLines: options.maxLines });
   }
 
   async readStateEvent(sessionId, ref, events, options) {
     const raw = await readJson(ref.path).catch(() => null);
     if (!raw) {
-      return;
+      return false;
     }
     const sourceRef = {
       ...ref,
@@ -1528,7 +1850,8 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
       eventType: "session.state",
       timestamp: normalizeTimestamp(raw.updatedAt ?? raw.createdAt),
     };
-    events.push(this.normalizeEvent({ ...raw, type: "session.state" }, sourceRef, options));
+    events.push(...this.normalizeEvents({ ...raw, type: "session.state" }, sourceRef, options));
+    return true;
   }
 
   async analyze(options = {}) {
@@ -1536,23 +1859,38 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
     const factsContext = factsMode ? createFactsRunContext(options, "qoder") : null;
     if (factsContext) options = factsContext.options;
     const result = await super.analyze(options);
+    const scope = await this.resolveScope(options);
+    const workspaceRun = await qualifyWorkspaceSessionInventory({
+      analyzer: this,
+      sessions: result.sessions,
+      scope,
+      options,
+    });
+    const resultBase = withWorkspaceMatchDiagnostics({
+      ...result,
+      sessions: workspaceRun.sessions,
+    }, workspaceRun);
     if (options.command === "sources") {
-      return result;
+      return resultBase;
     }
     if (options.command === "sessions") {
       const limit = options.limit === undefined ? null : Number(options.limit);
       return {
-        ...result,
-        sessions: Number.isFinite(limit) ? result.sessions.slice(0, limit) : result.sessions,
+        ...resultBase,
+        sessions: Number.isFinite(limit) ? workspaceRun.sessions.slice(0, limit) : workspaceRun.sessions,
       };
     }
 
-    const scope = await this.resolveScope(options);
     const factsInventory = factsMode
-      ? prepareFactsSessionInventory(result.sessions, factsContext)
-      : { sessions: result.sessions, omitted: {} };
+      ? prepareFactsSessionInventory(workspaceRun.sessions, factsContext)
+      : { sessions: workspaceRun.sessions, omitted: {} };
     const selectableSessions = factsInventory.sessions;
-    const selectionEntries = !factsMode && (options.selectionEntries ?? (
+    const suppliedSelectionEntries = workspaceQualifiedSelectionEntries(
+      options.selectionEntries,
+      selectableSessions,
+      workspaceRun,
+    );
+    const selectionEntries = !factsMode && (suppliedSelectionEntries ?? (
       options.selectionPlan
         ? await collectSessionSelectionEntries({
             analyzer: this,
@@ -1569,10 +1907,6 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
           strategy: factsMode ? options.selection ?? "stratified" : options.selection,
           defaultLimit: factsMode ? 5 : DEFAULT_LIMIT,
         });
-    const sessions = selection.sessions;
-    const detailedSessions = [];
-    const allEvents = [];
-
     const insightMode = options.command === "insights";
     const fileReadMode = options.command === "file-reads";
     const eventOptions =
@@ -1580,68 +1914,74 @@ export class QoderSessionAnalyzer extends SessionAnalyzer {
         ? { ...options, includeCommandText: true, includeUserText: true }
         : options;
 
-    for (const session of sessions) {
-      const events = await this.readSession(session, scope, eventOptions);
-      allEvents.push(...events);
-      detailedSessions.push(this.mergeSession(events, session));
-    }
+    const hydration = await hydrateWorkspaceSelection({
+      analyzer: this,
+      selection,
+      scope,
+      eventOptions,
+      workspaceRun,
+      options,
+    });
+    const effectiveSelection = hydration.selection;
+    const detailedSessions = hydration.detailedSessions;
+    const allEvents = hydration.events;
 
     if (factsMode) {
-      return buildSessionCoreFacts({
+      return withWorkspaceMatchDiagnostics(buildSessionCoreFacts({
         scope,
         events: allEvents,
-        selection,
-        warnings: result.warnings,
+        selection: effectiveSelection,
+        warnings: resultBase.warnings,
         omitted: factsInventory.omitted,
         episodeLimit: options["episode-limit"] ?? options.episodeLimit ?? options.limit,
         debug: parseBooleanFlag(options.debug ?? false),
-      });
+      }), workspaceRun, hydration.hydrationQualifications);
     }
 
     if (fileReadMode) {
-      const { facets: _unusedFacets, ...baseResult } = result;
-      return {
+      const { facets: _unusedFacets, ...baseResult } = resultBase;
+      return withWorkspaceMatchDiagnostics({
         ...baseResult,
         sessions: detailedSessions,
         fileReads: buildFileReadDiagnostics({
-          scope: result.scope,
-          indexedSessions: result.sessions,
+          scope: resultBase.scope,
+          indexedSessions: workspaceRun.sessions,
           sessions: detailedSessions,
-          warnings: result.warnings,
+          warnings: resultBase.warnings,
           events: allEvents,
         }),
-      };
+      }, workspaceRun, hydration.hydrationQualifications);
     }
 
-    const facets = buildFacets(result.sessions, detailedSessions, allEvents);
+    const facets = buildFacets(workspaceRun.sessions, detailedSessions, allEvents);
     if (insightMode) {
       const pricingTable = options["pricing-table"] ? await readJson(path.resolve(options["pricing-table"])) : undefined;
-      return {
-        ...result,
+      return withWorkspaceMatchDiagnostics({
+        ...resultBase,
         sessions: detailedSessions,
-        selection: selectionSummary(selection),
+        selection: selectionSummary(effectiveSelection),
         facets,
         insights: buildInsightPack({
-          scope: result.scope,
-          sources: result.sources,
+          scope: resultBase.scope,
+          sources: resultBase.sources,
           sessions: detailedSessions,
           facets,
-          warnings: result.warnings,
+          warnings: resultBase.warnings,
           events: allEvents,
-          selectionStrategy: selection.strategy,
-          selectionStrata: selection.strata,
+          selectionStrategy: effectiveSelection.strategy,
+          selectionStrata: effectiveSelection.strata,
           adapterVersion: "qoder-v2",
           usageOptions: { pricingTable },
         }),
-      };
+      }, workspaceRun, hydration.hydrationQualifications);
     }
 
-    return {
-      ...result,
+    return withWorkspaceMatchDiagnostics({
+      ...resultBase,
       sessions: detailedSessions,
-      selection: selectionSummary(selection),
+      selection: selectionSummary(effectiveSelection),
       facets,
-    };
+    }, workspaceRun, hydration.hydrationQualifications);
   }
 }
 

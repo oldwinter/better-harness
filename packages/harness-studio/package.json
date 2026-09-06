@@ -1,0 +1,87 @@
+{
+  "name": "@qoder-ai/harness-studio",
+  "version": "0.1.1",
+  "description": "React studio for @qoder-ai/harness: live AG-UI run view plus harness-compare evidence explorer.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.20.0 <25.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QoderAI/better-harness.git",
+    "directory": "packages/harness-studio"
+  },
+  "homepage": "https://github.com/QoderAI/better-harness/tree/main/packages/harness-studio#readme",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "harness-studio": "dist/server/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run clean && tsc && node scripts/build-app.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "dev": "node scripts/dev.mjs",
+    "prepack": "npm test",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "@pierre/diffs": "^1.3.6",
+    "@qoder-ai/harness": "0.2.0",
+    "@qoder-ai/harness-ui": "0.1.1",
+    "@shikijs/core": "^4.4.3",
+    "@shikijs/engine-javascript": "^4.4.3",
+    "@shikijs/langs": "^4.4.3",
+    "@tanstack/react-virtual": "^3.14.10",
+    "beautiful-mermaid": "^1.1.3",
+    "esbuild-wasm": "0.28.2",
+    "fast-xml-parser": "^5.11.1",
+    "fflate": "^0.8.3",
+    "i18next": "^26.4.0",
+    "oxc-parser": "0.147.0",
+    "oxc-transform": "0.147.0",
+    "pdfjs-dist": "^6.3.289",
+    "react": "19.2.8",
+    "react-arborist": "^3.16.0",
+    "react-dom": "19.2.8",
+    "react-i18next": "^17.0.12"
+  },
+  "peerDependencies": {
+    "@homology/integration-harness-notebook-provider": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@homology/integration-harness-notebook-provider": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

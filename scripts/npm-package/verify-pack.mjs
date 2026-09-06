@@ -20,6 +20,9 @@ function run(command, args) {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // `npm pack --json` includes one record per packaged file. The repository's
+    // intentionally large docs/reference surface exceeds Node's 1 MiB default.
+    maxBuffer: 64 * 1024 * 1024,
   });
   if (result.status !== 0) {
     fail(`${command} ${args.join(" ")} exited ${result.status}\n${result.error?.message ?? result.stderr}`);
@@ -56,6 +59,7 @@ function verifyReleaseVersionAlignment() {
     [".github/plugin/plugin.json", readJson(".github/plugin/plugin.json").version],
     [".github/plugin/marketplace.json", readJson(".github/plugin/marketplace.json").plugins?.[0]?.version],
     ["qwen-extension.json", readJson("qwen-extension.json").version],
+    [".kimi-plugin/plugin.json", readJson(".kimi-plugin/plugin.json").version],
   ];
   for (const [source, version] of versions) {
     if (version !== packageVersion) {
@@ -142,15 +146,24 @@ const required = [
   "package/.github/plugin/plugin.json",
   "package/.github/plugin/marketplace.json",
   "package/.qoder-plugin/plugin.json",
+  "package/.kimi-plugin/plugin.json",
   "package/qwen-extension.json",
+  "package/prompts/better-harness.md",
   "package/case-studies/factory/model/factory-readiness.md",
   "package/docs/glossary.md",
   "package/scripts/better-harness.mjs",
+  "package/scripts/host-support/index.mjs",
   "package/scripts/findings-recommend/findings-recommend.json",
   "package/scripts/findings-recommend/index.mjs",
   "package/scripts/review-trigger/cli.mjs",
   "package/scripts/coding-agent-practices/asset-baseline.mjs",
   "package/scripts/npm-package/create-bundle.mjs",
+  "package/scripts/workspace-topology/cli.mjs",
+  "package/scripts/workspace-topology/contract.mjs",
+  "package/scripts/workspace-topology/finding-target.mjs",
+  "package/scripts/workspace-topology/index.mjs",
+  "package/scripts/workspace-topology/inventory.mjs",
+  "package/scripts/workspace-topology/manifests.mjs",
   "package/scripts/harness-analysis/canvas-preview/cli.mjs",
   "package/scripts/harness-analysis/canvas-preview/fixture.mjs",
   "package/scripts/harness-analysis/canvas-preview/index.mjs",
@@ -167,6 +180,7 @@ const required = [
   "package/scripts/harness-analysis/evidence-bundle/project-harness.mjs",
   "package/scripts/harness-analysis/evidence-bundle/agent-customize.mjs",
   "package/scripts/harness-analysis/report-source/apply-review.mjs",
+  "package/scripts/harness-analysis/report-source/cli.mjs",
   "package/scripts/harness-analysis/report-source/episode-review.mjs",
   "package/scripts/harness-analysis/report-source/index.mjs",
   "package/scripts/harness-analysis/report-source/review-packet.mjs",
@@ -175,6 +189,8 @@ const required = [
   "package/scripts/harness-analysis/episode-evidence-review.mjs",
   "package/scripts/harness-analysis/report-review-packet.mjs",
   "package/scripts/harness-analysis/report-source.mjs",
+  "package/scripts/harness-analysis/learning-loop-candidates.mjs",
+  "package/scripts/harness-analysis/learning-loop-review-packet.mjs",
   "package/scripts/harness-analysis/record-fix-output.mjs",
   "package/scripts/harness-analysis/preview-support/canvas-transform.mjs",
   "package/scripts/session-analysis/episode-facts.mjs",
@@ -267,10 +283,17 @@ const requiredBundleEntries = [
   "case-studies/factory/model/factory-readiness.md",
   "docs/glossary.md",
   "scripts/better-harness.mjs",
+  "scripts/host-support/index.mjs",
   "scripts/findings-recommend/findings-recommend.json",
   "scripts/findings-recommend/index.mjs",
   "scripts/review-trigger/cli.mjs",
   "scripts/coding-agent-practices/asset-baseline.mjs",
+  "scripts/workspace-topology/cli.mjs",
+  "scripts/workspace-topology/contract.mjs",
+  "scripts/workspace-topology/finding-target.mjs",
+  "scripts/workspace-topology/index.mjs",
+  "scripts/workspace-topology/inventory.mjs",
+  "scripts/workspace-topology/manifests.mjs",
   "scripts/harness-analysis/canvas-preview/cli.mjs",
   "scripts/harness-analysis/canvas-preview/fixture.mjs",
   "scripts/harness-analysis/canvas-preview/index.mjs",
@@ -287,6 +310,7 @@ const requiredBundleEntries = [
   "scripts/harness-analysis/evidence-bundle/project-harness.mjs",
   "scripts/harness-analysis/evidence-bundle/agent-customize.mjs",
   "scripts/harness-analysis/report-source/apply-review.mjs",
+  "scripts/harness-analysis/report-source/cli.mjs",
   "scripts/harness-analysis/report-source/episode-review.mjs",
   "scripts/harness-analysis/report-source/index.mjs",
   "scripts/harness-analysis/report-source/review-packet.mjs",
@@ -295,6 +319,8 @@ const requiredBundleEntries = [
   "scripts/harness-analysis/episode-evidence-review.mjs",
   "scripts/harness-analysis/report-review-packet.mjs",
   "scripts/harness-analysis/report-source.mjs",
+  "scripts/harness-analysis/learning-loop-candidates.mjs",
+  "scripts/harness-analysis/learning-loop-review-packet.mjs",
   "scripts/harness-analysis/record-fix-output.mjs",
   "scripts/harness-analysis/preview-support/canvas-transform.mjs",
   "scripts/session-analysis/episode-facts.mjs",
@@ -330,19 +356,23 @@ const requiredBundleEntries = [
   "vendor/esbuild-wasm/LICENSE.md",
   "vendor/esbuild-wasm/lib/main.js",
   "vendor/esbuild-wasm/esbuild.wasm",
+  "node_modules/yaml/package.json",
+  "node_modules/yaml/LICENSE",
+  "node_modules/yaml/dist/index.js",
 ];
 const forbiddenBundlePrefixes = [
   ".claude-plugin/",
   ".codex-plugin/",
   ".cursor-plugin/",
   ".github/plugin/",
+  ".kimi-plugin/",
   "qwen-extension.json",
+  "prompts/",
   "test/",
   "dev/",
   ".idea/",
   ".qoder/",
   "assets/wasm/",
-  "node_modules/",
   "scripts/packaging/",
   "skills/loop-blueprint/",
   "skills/harness/",
@@ -373,6 +403,11 @@ verifyPreviewScriptTarget(bundleEntries, packageJson, "preview:canvas", "");
 for (const prefix of forbiddenBundlePrefixes) {
   if (hasPrefix(bundleEntries, prefix)) {
     fail(`runtime bundle has unexpected path ${prefix}`);
+  }
+}
+for (const entry of bundleEntries) {
+  if (entry.startsWith("node_modules/") && !entry.startsWith("node_modules/yaml/")) {
+    fail(`runtime bundle has unexpected dependency path ${entry}`);
   }
 }
 if (hasPathSegment(bundleEntries, ".plugin-eval")) {

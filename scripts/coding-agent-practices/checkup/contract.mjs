@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
+
+import {
+  getHostDescriptor,
+  HOST_CAPABILITIES,
+  hostHomeValue,
+  hostIdSetFor,
+  hostIdsFor,
+  normalizedHostHomeOptions,
+} from "../../host-support/index.mjs";
+import { expandHome } from "../../session-analysis/index.mjs";
 
 export const CHECKUP_KIND = "harness-customization-checkup";
 export const CHECKUP_SCHEMA_VERSION = 1;
@@ -9,6 +20,8 @@ export const DEFAULT_SESSION_LIMIT = 40;
 export const DEFAULT_MINIMUM_SESSIONS = 5;
 export const DEFAULT_NEW_INSTALL_GRACE_DAYS = 7;
 export const DEFAULT_SELECTION = "stratified";
+const CHECKUP_HOSTS = hostIdsFor(HOST_CAPABILITIES.CHECKUP);
+const CHECKUP_HOST_SET = hostIdSetFor(HOST_CAPABILITIES.CHECKUP);
 
 const FINDING_STATUSES = new Set([
   "observed",
@@ -75,8 +88,12 @@ export function normalizeCheckupOptions(options = {}) {
   }
 
   const workspace = path.resolve(options.workspace ?? process.cwd());
+  const provider = String(options.provider ?? "qoder").toLowerCase();
+  if (!CHECKUP_HOST_SET.has(provider)) {
+    throw new Error(`Unsupported checkup provider: ${provider}. Supported providers: ${CHECKUP_HOSTS.join(", ")}.`);
+  }
   return {
-    provider: String(options.provider ?? "qoder").toLowerCase(),
+    provider,
     locale: String(options.locale ?? "en").toLowerCase().startsWith("zh") ? "zh-CN" : "en",
     workspace,
     workspaceLabel: String(options.workspaceLabel ?? options["workspace-label"] ?? path.basename(workspace)),
@@ -95,15 +112,12 @@ export function normalizeCheckupOptions(options = {}) {
     includeGlobalCapabilities: booleanOption(
       options.includeGlobalCapabilities ?? options["include-global-capabilities"],
     ),
-    qoderHome: options.qoderHome ?? options["qoder-home"],
+    ...normalizedHostHomeOptions(options, provider),
     qoderSharedClientCacheRoot:
       options.qoderSharedClientCacheRoot ??
       options["qoder-shared-client-cache-root"] ??
       options["shared-client-cache-root"],
-    codexHome: options.codexHome ?? options["codex-home"],
-    claudeHome: options.claudeHome ?? options["claude-home"],
     claudeStatePath: options.claudeStatePath ?? options["claude-state"],
-    cursorHome: options.cursorHome ?? options["cursor-home"],
     frictionSignals: String(options.frictionSignals ?? options.friction ?? "")
       .split(",")
       .map((value) => value.trim())
@@ -143,6 +157,55 @@ export function safeLabel(value, fallback = "unknown") {
     return text.split(/[\\/]/u).filter(Boolean).at(-1) ?? fallback;
   }
   return text.slice(0, 160);
+}
+
+export function providerHomeField(provider) {
+  const normalized = String(provider ?? "").toLowerCase();
+  if (!CHECKUP_HOST_SET.has(normalized)) return null;
+  return getHostDescriptor(normalized)?.homeProperty ?? null;
+}
+
+/**
+ * Resolve the configuration-home root for an explicit provider.
+ * Prefer inventory/options values, then well-known env defaults for that host.
+ * Never falls back across providers (for example Codex must not use Qoder home).
+ */
+export function resolveProviderHome(provider, source = {}) {
+  const normalized = String(provider ?? "").toLowerCase();
+  const field = providerHomeField(normalized);
+  if (!field) {
+    throw new Error(`unsupported provider for provider-home binding: ${provider ?? "missing"}`);
+  }
+  const explicit = hostHomeValue(source, normalized);
+  if (explicit) {
+    return path.resolve(expandHome(String(explicit)));
+  }
+
+  const env = process.env ?? {};
+  const userHome = os.homedir();
+  const defaults = {
+    qoder: env.QODER_HOME ?? path.join(userHome, ".qoder"),
+    codex: env.CODEX_HOME ?? path.join(userHome, ".codex"),
+    cursor: env.CURSOR_HOME ?? path.join(userHome, ".cursor"),
+    claude: env.CLAUDE_CONFIG_DIR ?? env.CLAUDE_HOME ?? path.join(userHome, ".claude"),
+    qwen: env.QWEN_HOME ?? path.join(userHome, ".qwen"),
+    copilot: env.COPILOT_HOME ?? path.join(userHome, ".copilot"),
+    pi: env.PI_CODING_AGENT_DIR ?? path.join(userHome, ".pi", "agent"),
+    workbuddy: env.WORKBUDDY_DIR ?? path.join(userHome, ".workbuddy"),
+  };
+  return path.resolve(expandHome(defaults[normalized]));
+}
+
+/**
+ * Read the provider-owned home from an inventory object without inventing a
+ * foreign-host fallback. Returns null when the inventory does not expose that
+ * host's home field.
+ */
+export function inventoryProviderHome(provider, inventory = {}) {
+  const field = providerHomeField(provider);
+  const home = field ? hostHomeValue(inventory, provider) : null;
+  if (!home) return null;
+  return path.resolve(String(home));
 }
 
 export function countBy(items, key) {

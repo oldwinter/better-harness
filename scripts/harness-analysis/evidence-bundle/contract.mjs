@@ -1,14 +1,19 @@
-import path from "node:path";
+import { HOST_CAPABILITIES, hostIdSetFor } from "../../host-support/index.mjs";
+import {
+  analysisScopeFromTopology,
+  resolveConfiguredCwd,
+  validateWorkspaceTopology,
+} from "../../workspace-topology/index.mjs";
 
 export const EVIDENCE_BUNDLE_KIND = "better-harness.evidence-bundle";
-export const EVIDENCE_BUNDLE_SCHEMA_VERSION = 1;
+export const EVIDENCE_BUNDLE_SCHEMA_VERSION = 3;
 export const EVIDENCE_LANE_NAMES = Object.freeze([
   "sessionEvidence",
   "projectHarness",
   "agentCustomize",
 ]);
 
-const PROVIDERS = new Set(["qoder", "codex", "claude", "cursor", "qwen", "copilot"]);
+const PROVIDERS = hostIdSetFor(HOST_CAPABILITIES.EVIDENCE_BUNDLE);
 const DEPTHS = new Set(["quick", "normal"]);
 
 function enabled(value) {
@@ -60,20 +65,56 @@ export function freezeEvidenceBundleContext(options = {}, now = new Date()) {
       code: "INVALID_EVIDENCE_WINDOW",
     });
   }
-  return {
-    workspace: path.resolve(String(options.workspace)),
+  const topology = options.topology;
+  const analysisScope = options.analysisScope;
+  const configuredScope = resolveConfiguredCwd({
+    workspace: options.workspace,
+    cwd: options.cwd,
+  });
+  const canonicalWorkspace = configuredScope.workspace;
+  if (topology !== undefined) {
+    validateWorkspaceTopology(topology);
+    if (canonicalWorkspace !== topology.requestedWorkspace) {
+      throw Object.assign(new Error("workspace does not match the frozen topology target"), {
+        code: "EVIDENCE_WORKSPACE_TOPOLOGY_MISMATCH",
+      });
+    }
+    if (!analysisScope || !new Set(["repo", "path"]).has(analysisScope.kind)) {
+      throw Object.assign(new Error("topology requires a valid analysisScope"), {
+        code: "INVALID_EVIDENCE_ANALYSIS_SCOPE",
+      });
+    }
+    const expectedScope = analysisScopeFromTopology(topology);
+    if (analysisScope.kind !== expectedScope.kind
+      || analysisScope.route !== expectedScope.route
+      || !Array.isArray(analysisScope.pathspecs)
+      || analysisScope.pathspecs.length !== expectedScope.pathspecs.length
+      || analysisScope.pathspecs.some((item, index) => item !== expectedScope.pathspecs[index])) {
+      throw Object.assign(new Error("analysisScope is not bound to topology target"), {
+        code: "EVIDENCE_ANALYSIS_SCOPE_MISMATCH",
+      });
+    }
+  } else if (analysisScope !== undefined) {
+    throw Object.assign(new Error("analysisScope requires topology"), {
+      code: "MISSING_EVIDENCE_TOPOLOGY",
+    });
+  }
+  return Object.freeze({
+    workspace: topology?.requestedWorkspace ?? canonicalWorkspace,
+    cwd: configuredScope.cwd,
     provider,
     language: String(options.language ?? "en"),
     depth,
-    window: { since, until },
+    window: Object.freeze({ since, until }),
     evidenceLimit: positiveLimit(options["evidence-limit"] ?? options.evidenceLimit, depth === "quick" ? 3 : 5),
-    authority: {
+    authority: Object.freeze({
       includeUserHome: enabled(options["include-user-home"] ?? options.includeUserHome),
       includeMemories: options["include-memories"] === undefined && options.includeMemories === undefined
         ? provider === "qoder"
         : enabled(options["include-memories"] ?? options.includeMemories),
-    },
-  };
+    }),
+    ...(topology ? { topology, analysisScope } : {}),
+  });
 }
 
 export function availableLane(data, status = "available") {

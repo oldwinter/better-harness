@@ -12,8 +12,17 @@ const GITHUB_URL = "https://github.com/QoderAI/better-harness";
 const config = {
   title: "Better Harness",
   tagline:
-    "See how your AI coding workflow works—and make it better, one step at a time.",
+    "Open-source insights for the Agent Work Loop.",
   favicon: "img/favicon.svg",
+  headTags: [
+    {
+      tagName: "meta",
+      attributes: {
+        name: "google-site-verification",
+        content: "0hOARr2OBFHmWVFf1Bank71Vem1i36aGZnnwKLevZbM",
+      },
+    },
+  ],
 
   url: "https://qoderai.github.io",
   baseUrl: "/better-harness/",
@@ -41,11 +50,59 @@ const config = {
           sidebarPath: "./sidebars.js",
           editUrl: `${GITHUB_URL}/edit/main/docs/`,
         },
-        blog: false,
+        blog: {
+          path: "blog",
+          routeBasePath: "blog",
+          blogTitle: "Better Harness Blog",
+          blogDescription:
+            "Engineering practices for reliable coding-agent workflows.",
+          showReadingTime: true,
+          editUrl: `${GITHUB_URL}/edit/main/docs/`,
+        },
         theme: {
           customCss: "./src/css/custom.css",
         },
+        sitemap: {
+          // Keep low-value routes out of the sitemap: on-site search, thin
+          // blog taxonomy pages, and the whole zh-Hans blog tree (its list and
+          // taxonomy pages still serve English-fallback excerpts). Individual
+          // zh-Hans posts with a real Chinese translation are made indexable by
+          // the TRANSLATED_ZH_BLOG_ROUTES allowlist in src/theme/Root.js and are
+          // discoverable via their hreflang alternate on the English post; they
+          // are intentionally left out of this sitemap until the zh-Hans blog is
+          // predominantly native Chinese and the tree exclusion can be dropped.
+          ignorePatterns: [
+            "/better-harness/search",
+            "/better-harness/blog/tags",
+            "/better-harness/blog/tags/**",
+            "/better-harness/blog/authors",
+            "/better-harness/blog/authors/**",
+            "/better-harness/blog/archive",
+            "/better-harness/zh-Hans/search",
+            "/better-harness/zh-Hans/blog",
+            "/better-harness/zh-Hans/blog/**",
+          ],
+        },
       }),
+    ],
+  ],
+
+  themes: [
+    [
+      "@easyops-cn/docusaurus-search-local",
+      {
+        indexDocs: true,
+        indexBlog: true,
+        indexPages: false,
+        language: ["en", "zh"],
+        hashed: "filename",
+        docsDir: [
+          "docs",
+          "i18n/zh-Hans/docusaurus-plugin-content-docs/current",
+        ],
+        searchBarPosition: "right",
+        searchBarShortcutKeymap: "mod+k",
+      },
     ],
   ],
 
@@ -66,9 +123,26 @@ const config = {
             label: "Docs",
           },
           {
+            to: "/inspector/",
+            label: "Inspector",
+            position: "left",
+            className: "navbar__link--inspector-new",
+            "aria-label": "Inspector",
+          },
+          {
+            to: "/blog",
+            label: "Blog",
+            position: "left",
+          },
+          {
             href: "pathname:///demo/better-harness-report/",
             label: "Demo Report",
             position: "left",
+          },
+          {
+            href: `${GITHUB_URL}/issues/new/choose`,
+            label: "Report Issue",
+            position: "right",
           },
           {
             type: "localeDropdown",
@@ -94,6 +168,7 @@ const config = {
             items: [
               { label: "Introduction", to: "/docs/introduction" },
               { label: "Installation", to: "/docs/installation" },
+              { label: "Blog", to: "/blog" },
               { label: "Agent Work Loop", to: "/docs/concepts/agent-work-loop" },
             ],
           },
@@ -117,7 +192,7 @@ const config = {
               { label: "GitHub", href: GITHUB_URL },
               {
                 label: "npm",
-                href: "https://www.npmjs.com/package/@qoderai/better-harness",
+                href: "https://www.npmjs.com/package/@qoder-ai/better-harness",
               },
             ],
           },

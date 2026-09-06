@@ -12,16 +12,21 @@ Commands:
   Quickstart
     report                   Gather static evidence and hand off to the Better Harness skill for
                              a five-minute readiness report
+    doctor                   Run bounded read-only Better Harness runtime and host diagnostics
 
   Workflows
     harness                  Check Better Harness readiness reports and Canvas outputs
-                             subcommands: evidence-bundle, analyze, checkup, selection-profile,
-                             source, task-loop-report, render, preview-canvas, report-quality,
-                             repair-findings, record-fix-output, validate-canvas
+                             subcommands: evidence-bundle, workspace-topology, analyze, checkup,
+                             selection-profile, source, source-review, task-loop-report, render,
+                             preview-canvas, report-quality, repair-findings, record-fix-output,
+                             validate-canvas
 
   Project Evidence
-    session-analysis         Collect and normalize Qoder, Codex, Claude, Cursor, Qwen, and
-                             Copilot session evidence
+    session-analysis         Collect and normalize Qoder, Codex, Claude, Augment, Cursor, Qwen,
+                             Copilot, Pi, Kimi, WorkBuddy, Grok, and DeepSeek Harness session
+                             evidence
+    commit-session-link      Correlate local git commits with discovered coding-agent sessions
+                             and render a commit-view HTML report
     dependency-governance    Detect dependency governance files, automation, audit signals, and
                              stale dependency evidence
     cloc                     Count code, comments, and blank lines
@@ -29,6 +34,9 @@ Commands:
   Agent Assets
     agent-customize          Inspect agent-facing Skills, MCPs, hooks, plugins, settings, and
                              memory surfaces
+    plugin                   Inspect, plan, and verify the Better Harness plugin lifecycle
+                             without applying changes
+                             subcommands: status, plan, verify
     agent-lint               Parse AGENTS.md and local Markdown references for agent-instruction
                              linting
     coding-agent-practices   Inspect coding-agent assets and practice evidence
@@ -40,8 +48,13 @@ Commands:
                              evidence-pack, git-history-profile, project-profile,
                              qoder-consistency-schema
 
+  Other
+    harness-inspector        Inspect feature, Story, prompt, session, tool-call, and commit
+                             provenance by product tree or date
+
 Examples:
   better-harness report
+  better-harness doctor --platform all --json
   better-harness harness analyze --workspace . --language en --format json
   better-harness harness checkup --phase scan --provider qoder --workspace . --json
   better-harness harness render --findings <input>/findings.json --mode qoder-canvas --out .qoder/better-harness --target . --validate --json
@@ -55,7 +68,7 @@ Examples:
 
 Discovery:
   commands                 List available commands; add --json for machine-readable inventory
-  command describe         Describe one command; add --json for the command contract
+  command describe         Describe one command path; add --json for the command contract
   schema                   Emit the OpenCLI schema as JSON
   --help --audience advanced Include workflow and advanced commands
   --help --audience maintainer Include every registered command
